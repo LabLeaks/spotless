@@ -1,0 +1,22 @@
+{
+  "name": "spotless",
+  "version": "0.1.0",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "spotless": "src/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts start",
+    "dev": "bun --watch run src/index.ts start",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
