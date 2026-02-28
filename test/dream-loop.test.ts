@@ -38,6 +38,33 @@ describe("dream loop", () => {
     loop.start(() => ["test-agent"]); // second call should be no-op
     loop.stop();
   });
+
+  test("interface has registerAgent method", () => {
+    const loop = createDreamLoop();
+    expect(typeof loop.registerAgent).toBe("function");
+  });
+
+  test("registerAgent before start is no-op", () => {
+    const loop = createDreamLoop();
+    // Should not throw when not running
+    loop.registerAgent("test-agent");
+  });
+
+  test("registerAgent schedules new agent", () => {
+    const loop = createDreamLoop();
+    loop.start(() => []);
+    // Should not throw — agent gets scheduled with relaxed interval
+    loop.registerAgent("new-agent");
+    loop.stop();
+  });
+
+  test("registerAgent is no-op for already-known agent", () => {
+    const loop = createDreamLoop();
+    loop.start(() => ["existing-agent"]);
+    // Agent already scheduled via start() — registerAgent should be a no-op
+    loop.registerAgent("existing-agent");
+    loop.stop();
+  });
 });
 
 describe("interval for pressure", () => {

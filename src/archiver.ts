@@ -89,20 +89,20 @@ export function archiveUserMessage(
  * Archive a session boundary marker.
  * Inserted when a new conversation is detected so the eidetic trace
  * can show session breaks to the model.
+ *
+ * Session boundaries are marked pre-consolidated (consolidated=1) because
+ * they don't contain conversation content — the dreamer filters them out
+ * anyway. Without this, they permanently inflate consolidation pressure.
  */
 export function archiveSessionBoundary(
   db: Database,
   messageGroup: number,
 ): void {
-  archiveEvent(db, {
-    timestamp: Date.now(),
-    message_group: messageGroup,
-    role: "user",
-    content_type: "text",
-    content: "<session-boundary />",
-    is_subagent: 0,
-    metadata: null,
-  });
+  db.run(
+    `INSERT INTO raw_events (timestamp, message_group, role, content_type, content, is_subagent, metadata, consolidated)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+    [Date.now(), messageGroup, "user", "text", "<session-boundary />", 0, null],
+  );
 }
 
 /**

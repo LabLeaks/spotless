@@ -21,6 +21,7 @@ export interface DreamLoop {
   stop(): void;
   triggerNow(agentName?: string): Promise<DreamResult[]>;
   escalate(agentName: string): void;
+  registerAgent(agentName: string): void;
 }
 
 interface AgentState {
@@ -184,6 +185,14 @@ export function createDreamLoop(config?: DreamLoopConfig): DreamLoop {
         console.log(`[dream] ${agentName}: escalation — triggering immediate dream`);
         scheduleAgent(agentName, 0);
       }
+    },
+
+    registerAgent(agentName: string): void {
+      if (!running) return;
+      // No-op if agent already scheduled
+      if (agentStates.has(agentName)) return;
+      console.log(`[dream] Registering new agent: ${agentName}`);
+      scheduleAgent(agentName, getIntervalForPressure(0));
     },
 
     async triggerNow(agentName?: string): Promise<DreamResult[]> {

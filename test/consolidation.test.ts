@@ -296,6 +296,44 @@ describe("consolidation pressure", () => {
     db.close();
   });
 
+  test("excludes session boundaries from pressure", () => {
+    const { db, path } = tempDb();
+    cleanup.push(path);
+
+    db.run(
+      "INSERT INTO raw_events (timestamp, message_group, role, content_type, content) VALUES (?, ?, ?, ?, ?)",
+      [Date.now(), 1, "user", "text", "real content"]
+    );
+    db.run(
+      "INSERT INTO raw_events (timestamp, message_group, role, content_type, content) VALUES (?, ?, ?, ?, ?)",
+      [Date.now(), 2, "user", "text", "<session-boundary />"]
+    );
+
+    const { unconsolidatedTokens } = getConsolidationPressure(db);
+    // Only "real content" (12 chars → 3.0 tokens) should count
+    expect(unconsolidatedTokens).toBe(3.0);
+    db.close();
+  });
+
+  test("excludes system reminders from pressure", () => {
+    const { db, path } = tempDb();
+    cleanup.push(path);
+
+    db.run(
+      "INSERT INTO raw_events (timestamp, message_group, role, content_type, content) VALUES (?, ?, ?, ?, ?)",
+      [Date.now(), 1, "user", "text", "real content"]
+    );
+    db.run(
+      "INSERT INTO raw_events (timestamp, message_group, role, content_type, content) VALUES (?, ?, ?, ?, ?)",
+      [Date.now(), 2, "user", "text", "<system-reminder>some internal CC metadata that should not count</system-reminder>"]
+    );
+
+    const { unconsolidatedTokens } = getConsolidationPressure(db);
+    // Only "real content" (12 chars → 3.0 tokens) should count
+    expect(unconsolidatedTokens).toBe(3.0);
+    db.close();
+  });
+
   test("queries use idx_raw_consolidated index", () => {
     const { db, path } = tempDb();
     cleanup.push(path);

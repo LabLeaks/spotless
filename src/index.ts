@@ -199,6 +199,11 @@ function cmdStart(port: number, noDream: boolean): void {
     proxy.onEideticTrimmed = (agentName: string) => {
       dreamLoop!.escalate(agentName);
     };
+
+    // Wire agent init: schedule new agents for dreaming on first request
+    proxy.onAgentInit = (agentName: string) => {
+      dreamLoop!.registerAgent(agentName);
+    };
   }
 
   // Graceful shutdown

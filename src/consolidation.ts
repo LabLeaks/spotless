@@ -78,7 +78,10 @@ export function getWatermark(db: Database): number | null {
 
 export function getConsolidationPressure(db: Database, budget: number = EIDETIC_BUDGET): PressureResult {
   const row = db.query(
-    "SELECT COALESCE(SUM(LENGTH(content)) / 4.0, 0) as tokens FROM raw_events WHERE consolidated = 0 AND is_subagent = 0 AND content_type != 'thinking'"
+    `SELECT COALESCE(SUM(LENGTH(content)) / 4.0, 0) as tokens FROM raw_events
+     WHERE consolidated = 0 AND is_subagent = 0 AND content_type != 'thinking'
+       AND content != '<session-boundary />'
+       AND content NOT LIKE '<system-reminder>%'`
   ).get() as { tokens: number };
   const unconsolidatedTokens = row.tokens;
   const pressure = budget > 0 ? unconsolidatedTokens / budget : 0;
@@ -90,11 +93,17 @@ export function getConsolidationStatus(db: Database, budget: number = EIDETIC_BU
   const { pressure, unconsolidatedTokens } = getConsolidationPressure(db, budget);
 
   const groupRow = db.query(
-    "SELECT COUNT(DISTINCT message_group) as total FROM raw_events WHERE is_subagent = 0"
+    `SELECT COUNT(DISTINCT message_group) as total FROM raw_events
+     WHERE is_subagent = 0
+       AND content != '<session-boundary />'
+       AND content NOT LIKE '<system-reminder>%'`
   ).get() as { total: number };
 
   const consolidatedRow = db.query(
-    "SELECT COUNT(DISTINCT message_group) as consolidated FROM raw_events WHERE consolidated = 1 AND is_subagent = 0"
+    `SELECT COUNT(DISTINCT message_group) as consolidated FROM raw_events
+     WHERE consolidated = 1 AND is_subagent = 0
+       AND content != '<session-boundary />'
+       AND content NOT LIKE '<system-reminder>%'`
   ).get() as { consolidated: number };
 
   return {

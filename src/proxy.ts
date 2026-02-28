@@ -57,6 +57,7 @@ export interface ProxyInstance {
   getStats: () => ProxyStats;
   getAgentContexts: () => Map<string, AgentContext>;
   onEideticTrimmed: ((agentName: string) => void) | null;
+  onAgentInit: ((agentName: string) => void) | null;
 }
 
 /**
@@ -100,6 +101,7 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
     agentRequests: new Map(),
   };
   let onEideticTrimmedFn: ((agentName: string) => void) | null = null;
+  let onAgentInitFn: ((agentName: string) => void) | null = null;
 
   function getOrInitAgent(agentName: string): AgentContext {
     const existing = agents.get(agentName);
@@ -115,6 +117,12 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
 
     const ctx: AgentContext = { db, state };
     agents.set(agentName, ctx);
+
+    // Notify dream loop so new agents get scheduled for dreaming
+    if (onAgentInitFn) {
+      onAgentInitFn(agentName);
+    }
+
     return ctx;
   }
 
@@ -375,6 +383,12 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
     },
     set onEideticTrimmed(fn: ((agentName: string) => void) | null) {
       onEideticTrimmedFn = fn;
+    },
+    get onAgentInit() {
+      return onAgentInitFn;
+    },
+    set onAgentInit(fn: ((agentName: string) => void) | null) {
+      onAgentInitFn = fn;
     },
   };
 
