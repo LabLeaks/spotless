@@ -156,7 +156,7 @@ export interface IdentityNode extends Memory {
 }
 
 /**
- * Get all working-self memories (core, self, relationship) from the registry.
+ * Get all working-self memories (self, relationship) from the registry.
  * Returns the role alongside each memory so the hippocampus prompt can label them.
  */
 export function getIdentityNodes(db: Database): IdentityNode[] {

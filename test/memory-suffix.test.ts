@@ -52,8 +52,8 @@ describe("buildMemorySuffix", () => {
     const id1 = insertMemory(db, "first fact", 0.5, 1000);
     const id2 = insertMemory(db, "second fact", 0.5, 2000);
     const result = buildMemorySuffix(db, [id2, id1]); // passed out of order
-    expect(result).toContain("<your memories>");
-    expect(result).toContain("</your memories>");
+    expect(result).toContain("<relevant knowledge>");
+    expect(result).toContain("</relevant knowledge>");
     const firstIdx = result.indexOf("first fact");
     const secondIdx = result.indexOf("second fact");
     expect(firstIdx).toBeLessThan(secondIdx);
@@ -68,11 +68,11 @@ describe("buildMemorySuffix", () => {
     expect(result).not.toContain("B".repeat(100));
   });
 
-  test("wraps in your memories tags", () => {
+  test("wraps in relevant knowledge tags", () => {
     const id = insertMemory(db, "test fact", 0.5);
     const result = buildMemorySuffix(db, [id]);
-    expect(result.startsWith("<your memories>")).toBe(true);
-    expect(result).toContain("</your memories>");
+    expect(result.startsWith("<relevant knowledge>")).toBe(true);
+    expect(result).toContain("</relevant knowledge>");
     expect(result.endsWith("\n\n")).toBe(true);
   });
 });

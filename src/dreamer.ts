@@ -16,11 +16,11 @@ import {
   buildDreamSystemPrompt,
   buildDreamInitialMessage,
   buildDreamTurnPrompt,
-  buildIdentitySystemPrompt,
-  buildIdentityInitialMessage,
+  buildReflectionSystemPrompt,
+  buildReflectionInitialMessage,
   type DreamContext,
   type DreamTurn,
-  type IdentityPassContext,
+  type ReflectionPassContext,
 } from "./dream-prompt.ts";
 import {
   queryMemories,
@@ -35,12 +35,13 @@ import {
   drainRetrievalLog,
   supersedeMemory,
   reflectOnSelf,
-  evolveIdentity,
-  evolveRelationship,
+  updateSelfConcept,
+  recompileIdentityCache,
   markSignificance,
   cleanupConsolidatedFromFts,
 } from "./dream-tools.ts";
 import { getIdentityNodes } from "./recall.ts";
+import { getConsolidationPressure } from "./consolidation.ts";
 import type { DreamResult, MemoryType } from "./types.ts";
 import type { Database } from "bun:sqlite";
 
@@ -67,15 +68,15 @@ export const CONSOLIDATION_TOOLS = new Set([
   "done",
 ]);
 
-export const IDENTITY_TOOLS = new Set([
+export const REFLECTION_TOOLS = new Set([
   "query_memories",
-  "reflect_on_self", "evolve_identity", "evolve_relationship",
+  "reflect_on_self", "update_self_concept",
   "mark_significance",
   "done",
 ]);
 
 // Union of both for executeTool validation
-const ALL_TOOLS = new Set([...CONSOLIDATION_TOOLS, ...IDENTITY_TOOLS]);
+const ALL_TOOLS = new Set([...CONSOLIDATION_TOOLS, ...REFLECTION_TOOLS]);
 
 // --- Tool loop ---
 
@@ -151,18 +152,11 @@ async function runToolLoop(config: ToolLoopConfig): Promise<void> {
 // --- Identity pass helpers ---
 
 /**
- * Determine whether the identity pass should run.
- * True if consolidation created new memories OR identity nodes are incomplete.
+ * Determine whether the reflection pass should run.
+ * True only if consolidation created new memories.
  */
-export function shouldRunIdentityPass(db: Database, newMemoryIds: number[]): boolean {
-  if (newMemoryIds.length > 0) return true;
-
-  // Check if self or relationship identity nodes are missing
-  const nodes = getIdentityNodes(db);
-  const roles = new Set(nodes.map(n => n.role));
-  if (!roles.has("self") || !roles.has("relationship")) return true;
-
-  return false;
+export function shouldRunReflectionPass(newMemoryIds: number[]): boolean {
+  return newMemoryIds.length > 0;
 }
 
 /**
@@ -197,9 +191,11 @@ export async function runDreamPass(config: DreamPassConfig): Promise<DreamResult
     memoriesPruned: 0,
     memoriesSuperseded: 0,
     associationsCreated: 0,
-    identityOps: 0,
+    reflectionOps: 0,
     errors: [],
     durationMs: 0,
+    groupsConsolidated: 0,
+    pressure: 0,
   };
 
   try {
@@ -262,22 +258,13 @@ export async function runDreamPass(config: DreamPassConfig): Promise<DreamResult
         logPrefix: "[consolidation]",
       });
 
-      // Post-Phase 1: Clean consolidated events from raw_events_fts
-      if (newMemoryIds.length > 0) {
-        try {
-          cleanupConsolidatedFromFts(db, newMemoryIds);
-        } catch {
-          // Non-fatal — FTS5 cleanup failure shouldn't break dreaming
-        }
-      }
-
-      // Phase 2: Identity (deterministic — runs if there's anything to reflect on)
-      if (shouldRunIdentityPass(db, newMemoryIds)) {
+      // Phase 2: Reflection (runs when new memories were created)
+      if (shouldRunReflectionPass(newMemoryIds)) {
         const identityNodes = getIdentityNodes(db);
         const newMemories = loadNewMemories(db, newMemoryIds);
         const totalCount = getTotalMemoryCount(db);
 
-        const identityCtx: IdentityPassContext = {
+        const reflectionCtx: ReflectionPassContext = {
           agentName: config.agentName,
           newMemories,
           identityNodes: identityNodes.map(n => ({
@@ -287,17 +274,63 @@ export async function runDreamPass(config: DreamPassConfig): Promise<DreamResult
         };
 
         await runToolLoop({
-          systemPrompt: buildIdentitySystemPrompt(config.agentName),
-          initialMessage: buildIdentityInitialMessage(identityCtx),
+          systemPrompt: buildReflectionSystemPrompt(config.agentName),
+          initialMessage: buildReflectionInitialMessage(reflectionCtx),
           model,
           maxIterations: 6,
-          allowedTools: IDENTITY_TOOLS,
+          allowedTools: REFLECTION_TOOLS,
           db,
           newMemoryIds,
           result,
-          logPrefix: "[identity]",
+          logPrefix: "[reflection]",
         });
+
+        // Recompile identity cache from individual memories
+        try {
+          recompileIdentityCache(db, "self", config.agentName);
+          recompileIdentityCache(db, "relationship", config.agentName);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          result.errors.push(`Identity cache recompile failed: ${msg}`);
+        }
       }
+
+      // Post-consolidation: Clean source events from raw_events_fts
+      // Runs after both phases so all newMemoryIds (Phase 1 + Phase 2) are included
+      if (newMemoryIds.length > 0) {
+        try {
+          cleanupConsolidatedFromFts(db, newMemoryIds);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          result.errors.push(`FTS5 cleanup failed: ${msg}`);
+        }
+      }
+
+      // Mark all processed groups as consolidated
+      try {
+        const groupIds = rawGroups.map(g => g.message_group);
+        if (groupIds.length > 0) {
+          const placeholders = groupIds.map(() => "?").join(",");
+          db.run(
+            `UPDATE raw_events SET consolidated = 1 WHERE message_group IN (${placeholders}) AND is_subagent = 0`,
+            groupIds,
+          );
+          result.groupsConsolidated = groupIds.length;
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        result.errors.push(`Post-pass marking failed: ${msg}`);
+      }
+
+      // Compute current consolidation pressure for dream loop scheduling
+      try {
+        const { pressure } = getConsolidationPressure(db);
+        result.pressure = pressure;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        result.errors.push(`Pressure computation failed: ${msg}`);
+      }
+
       // Persist dream pass result for dashboard diagnostics
       try {
         db.run(
@@ -316,12 +349,12 @@ export async function runDreamPass(config: DreamPassConfig): Promise<DreamResult
             result.memoriesPruned,
             result.memoriesSuperseded,
             result.associationsCreated,
-            result.identityOps,
+            result.reflectionOps,
             result.errors.length > 0 ? JSON.stringify(result.errors) : null,
           ],
         );
-      } catch {
-        // Non-fatal — diagnostics should never break dreaming
+      } catch (err) {
+        console.error(`[dream] Failed to persist dream pass:`, err);
       }
     } finally {
       db.close();
@@ -406,7 +439,7 @@ function resolveMemoryRef(ref: unknown, newMemoryIds: number[]): number | null {
   return null;
 }
 
-const VALID_TYPES: Set<string> = new Set(["episodic", "fact", "affective", "identity"]);
+const VALID_TYPES: Set<string> = new Set(["episodic", "fact"]);
 
 /**
  * Execute a dream tool call against the database.
@@ -460,7 +493,7 @@ export function executeTool(
       let memType: MemoryType = "episodic";
       if (input.type) {
         if (!VALID_TYPES.has(input.type as string)) {
-          throw new Error(`Invalid memory type: "${input.type}". Must be one of: episodic, fact, affective, identity`);
+          throw new Error(`Invalid memory type: "${input.type}". Must be one of: episodic, fact`);
         }
         memType = input.type as MemoryType;
       }
@@ -556,42 +589,36 @@ export function executeTool(
     }
 
     case "reflect_on_self": {
+      const anchor = (input.anchor as "self" | "relationship") ?? "self";
       const { newId } = reflectOnSelf(
         db,
         input.insight as string,
         (input.source_event_ids as number[]) ?? [],
+        anchor,
       );
       newMemoryIds.push(newId);
       result.memoriesCreated++;
-      result.identityOps++;
+      result.reflectionOps++;
       result.operationsExecuted++;
       return { new_id: newId, ref: `new_${newMemoryIds.length - 1}` };
     }
 
-    case "evolve_identity": {
-      const { newId, previousId } = evolveIdentity(
+    case "update_self_concept": {
+      const anchor = (input.anchor as "self" | "relationship") ?? "self";
+      const { newId, archivedId } = updateSelfConcept(
         db,
-        input.new_self_model as string,
+        input.content as string,
+        input.salience as number,
+        anchor,
         (input.source_event_ids as number[]) ?? [],
+        input.supersedes_id as number | undefined,
       );
       newMemoryIds.push(newId);
       result.memoriesCreated++;
-      result.identityOps++;
+      if (archivedId !== undefined) result.memoriesSuperseded++;
+      result.reflectionOps++;
       result.operationsExecuted++;
-      return { new_id: newId, previous_id: previousId, ref: `new_${newMemoryIds.length - 1}` };
-    }
-
-    case "evolve_relationship": {
-      const { newId, previousId } = evolveRelationship(
-        db,
-        input.new_dynamic as string,
-        (input.source_event_ids as number[]) ?? [],
-      );
-      newMemoryIds.push(newId);
-      result.memoriesCreated++;
-      result.identityOps++;
-      result.operationsExecuted++;
-      return { new_id: newId, previous_id: previousId, ref: `new_${newMemoryIds.length - 1}` };
+      return { new_id: newId, archived_id: archivedId, ref: `new_${newMemoryIds.length - 1}` };
     }
 
     case "mark_significance": {
@@ -600,7 +627,7 @@ export function executeTool(
         throw new Error(`Unresolvable memory ref: ${input.memory_id}`);
       }
       markSignificance(db, memRef);
-      result.identityOps++;
+      result.reflectionOps++;
       result.operationsExecuted++;
       return { ok: true };
     }

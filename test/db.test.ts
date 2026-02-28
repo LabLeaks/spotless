@@ -1,6 +1,6 @@
 import { test, expect, describe, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import { openDb, initSchema, getMaxMessageGroup, migrateMemoryTypes } from "../src/db.ts";
+import { openDb, initSchema, getMaxMessageGroup, migrateMemoryTypes, migrateConsolidated, migrateAdr005 } from "../src/db.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unlinkSync } from "node:fs";
@@ -401,19 +401,49 @@ describe("memory type architecture", () => {
     db.close();
   });
 
-  test("valid types accepted: episodic, fact, affective, identity", () => {
+  test("valid types accepted: episodic, fact", () => {
     const { db, path } = tempDb();
     cleanup.push(path);
 
     const now = Date.now();
-    for (const type of ["episodic", "fact", "affective", "identity"]) {
+    for (const type of ["episodic", "fact"]) {
       db.run(
         "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
         [`${type} memory`, 0.5, now, now, type]
       );
     }
     const count = (db.query("SELECT COUNT(*) as c FROM memories").get() as { c: number }).c;
-    expect(count).toBe(4);
+    expect(count).toBe(2);
+
+    db.close();
+  });
+
+  test("CHECK constraint rejects 'affective' type", () => {
+    const { db, path } = tempDb();
+    cleanup.push(path);
+
+    const now = Date.now();
+    expect(() => {
+      db.run(
+        "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
+        ["bad type", 0.5, now, now, "affective"]
+      );
+    }).toThrow();
+
+    db.close();
+  });
+
+  test("CHECK constraint rejects 'identity' type", () => {
+    const { db, path } = tempDb();
+    cleanup.push(path);
+
+    const now = Date.now();
+    expect(() => {
+      db.run(
+        "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
+        ["bad type", 0.5, now, now, "identity"]
+      );
+    }).toThrow();
 
     db.close();
   });
@@ -468,7 +498,7 @@ describe("memory type architecture", () => {
     db.close();
   });
 
-  test("migration classifies identity_nodes references as identity type", () => {
+  test("identity_nodes references stay as episodic on fresh DB (identity type removed)", () => {
     const { db, path } = tempDb();
     cleanup.push(path);
 
@@ -481,11 +511,10 @@ describe("memory type architecture", () => {
     const memId = (db.query("SELECT last_insert_rowid() as id").get() as { id: number }).id;
     db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES (?, ?)", ["self", memId]);
 
-    // Run migration again
-    migrateMemoryTypes(db);
-
+    // On a fresh DB with ADR-005 CHECK constraint, identity_nodes refs remain 'episodic'
+    // (the 'identity' type no longer exists in the CHECK constraint)
     const row = db.query("SELECT type FROM memories WHERE id = ?").get(memId) as { type: string };
-    expect(row.type).toBe("identity");
+    expect(row.type).toBe("episodic");
 
     db.close();
   });
@@ -527,6 +556,464 @@ describe("memory type architecture", () => {
     );
     const count = (db.query("SELECT COUNT(*) as c FROM memories").get() as { c: number }).c;
     expect(count).toBe(1);
+
+    db.close();
+  });
+});
+
+describe("consolidated column migration", () => {
+  const cleanup: string[] = [];
+
+  afterEach(() => {
+    for (const p of cleanup) {
+      try { unlinkSync(p); } catch {}
+      try { unlinkSync(p + "-wal"); } catch {}
+      try { unlinkSync(p + "-shm"); } catch {}
+    }
+    cleanup.length = 0;
+  });
+
+  test("consolidated column exists on fresh DB", () => {
+    const { db, path } = tempDb();
+    cleanup.push(path);
+
+    const columns = db.query("PRAGMA table_info(raw_events)").all() as { name: string }[];
+    const colNames = columns.map(c => c.name);
+    expect(colNames).toContain("consolidated");
+
+    db.close();
+  });
+
+  test("consolidated defaults to 0 on new rows", () => {
+    const { db, path } = tempDb();
+    cleanup.push(path);
+
+    db.run(
+      "INSERT INTO raw_events (timestamp, message_group, role, content_type, content) VALUES (?, ?, ?, ?, ?)",
+      [Date.now(), 1, "user", "text", "hello"]
+    );
+    const row = db.query("SELECT consolidated FROM raw_events").get() as { consolidated: number };
+    expect(row.consolidated).toBe(0);
+
+    db.close();
+  });
+
+  test("idx_raw_consolidated index exists", () => {
+    const { db, path } = tempDb();
+    cleanup.push(path);
+
+    const indexes = db.query(
+      "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_raw_consolidated'"
+    ).all();
+    expect(indexes.length).toBe(1);
+
+    db.close();
+  });
+
+  test("idx_memory_sources_raw_event index exists", () => {
+    const { db, path } = tempDb();
+    cleanup.push(path);
+
+    const indexes = db.query(
+      "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_memory_sources_raw_event'"
+    ).all();
+    expect(indexes.length).toBe(1);
+
+    db.close();
+  });
+
+  test("backfill marks memory_sources-linked events as consolidated", () => {
+    const path = join(tmpdir(), `spotless-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    cleanup.push(path);
+    const db = openDb(path);
+
+    // Build schema WITHOUT consolidated column first (simulate old DB)
+    // We'll use initSchema which adds the column, then insert data and re-run migration
+    initSchema(db);
+
+    const now = Date.now();
+    // Insert raw events
+    db.run(
+      "INSERT INTO raw_events (timestamp, message_group, role, content_type, content, consolidated) VALUES (?, ?, ?, ?, ?, 0)",
+      [now, 1, "user", "text", "event one"]
+    );
+    const rawId1 = (db.query("SELECT last_insert_rowid() as id").get() as { id: number }).id;
+
+    db.run(
+      "INSERT INTO raw_events (timestamp, message_group, role, content_type, content, consolidated) VALUES (?, ?, ?, ?, ?, 0)",
+      [now, 2, "user", "text", "event two"]
+    );
+
+    // Create a memory linked to event one
+    db.run(
+      "INSERT INTO memories (content, salience, created_at, last_accessed) VALUES (?, ?, ?, ?)",
+      ["a memory", 0.5, now, now]
+    );
+    const memId = (db.query("SELECT last_insert_rowid() as id").get() as { id: number }).id;
+    db.run("INSERT INTO memory_sources (memory_id, raw_event_id) VALUES (?, ?)", [memId, rawId1]);
+
+    // Re-run migration — should backfill
+    migrateConsolidated(db);
+
+    // Event one should be consolidated (linked via memory_sources)
+    const row1 = db.query("SELECT consolidated FROM raw_events WHERE id = ?").get(rawId1) as { consolidated: number };
+    expect(row1.consolidated).toBe(1);
+
+    // Event two should remain unconsolidated
+    const rows = db.query("SELECT consolidated FROM raw_events WHERE consolidated = 0").all();
+    expect(rows.length).toBe(1);
+
+    db.close();
+  });
+
+  test("migration is idempotent (run twice, no error)", () => {
+    const { db, path } = tempDb();
+    cleanup.push(path);
+
+    migrateConsolidated(db);
+    migrateConsolidated(db);
+
+    // Still works
+    db.run(
+      "INSERT INTO raw_events (timestamp, message_group, role, content_type, content) VALUES (?, ?, ?, ?, ?)",
+      [Date.now(), 1, "user", "text", "test"]
+    );
+    const row = db.query("SELECT consolidated FROM raw_events").get() as { consolidated: number };
+    expect(row.consolidated).toBe(0);
+
+    db.close();
+  });
+
+  test("EXPLAIN QUERY PLAN uses idx_raw_consolidated for unconsolidated query", () => {
+    const { db, path } = tempDb();
+    cleanup.push(path);
+
+    const plan = db.query(
+      "EXPLAIN QUERY PLAN SELECT id, message_group FROM raw_events WHERE consolidated = 0 AND is_subagent = 0"
+    ).all() as { detail: string }[];
+
+    const usesIndex = plan.some(row => row.detail.includes("idx_raw_consolidated"));
+    expect(usesIndex).toBe(true);
+
+    db.close();
+  });
+
+  test("initSchema succeeds on pre-migration DB (no type/archived_at/consolidated)", () => {
+    // Simulate a pre-Sprint-7 DB by creating tables without new columns
+    const path = join(tmpdir(), `spotless-premigration-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    const db = openDb(path);
+
+    // Create old-style raw_events WITHOUT consolidated column
+    db.run(`CREATE TABLE raw_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp INTEGER NOT NULL,
+      message_group INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      content_type TEXT NOT NULL,
+      content TEXT NOT NULL,
+      is_subagent INTEGER DEFAULT 0,
+      metadata JSON
+    )`);
+
+    // Create old-style memories WITHOUT type/archived_at columns
+    db.run(`CREATE TABLE memories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      content TEXT NOT NULL,
+      salience REAL NOT NULL DEFAULT 0.5,
+      created_at INTEGER NOT NULL,
+      last_accessed INTEGER NOT NULL,
+      access_count INTEGER NOT NULL DEFAULT 0
+    )`);
+
+    // Create supporting tables
+    db.run(`CREATE TABLE memory_sources (
+      memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      raw_event_id INTEGER NOT NULL REFERENCES raw_events(id),
+      PRIMARY KEY (memory_id, raw_event_id)
+    )`);
+    db.run(`CREATE TABLE associations (
+      source_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      target_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      strength REAL NOT NULL DEFAULT 0.1,
+      reinforcement_count INTEGER NOT NULL DEFAULT 1,
+      last_reinforced INTEGER NOT NULL,
+      PRIMARY KEY (source_id, target_id),
+      CHECK (source_id < target_id)
+    )`);
+    db.run(`CREATE TABLE retrieval_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp INTEGER NOT NULL)`);
+    db.run(`CREATE TABLE retrieval_log_entries (
+      log_id INTEGER NOT NULL REFERENCES retrieval_log(id) ON DELETE CASCADE,
+      memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      PRIMARY KEY (log_id, memory_id)
+    )`);
+    db.run(`CREATE TABLE identity_nodes (role TEXT PRIMARY KEY, memory_id INTEGER REFERENCES memories(id) ON DELETE SET NULL)`);
+
+    // Insert an identity node
+    const now = Date.now();
+    db.run("INSERT INTO memories (content, salience, created_at, last_accessed, access_count) VALUES (?, ?, ?, ?, ?)",
+      ["I am a test agent with deep convictions.", 0.9, now, now, 0]);
+    db.run("INSERT INTO identity_nodes (role, memory_id) VALUES ('self', 1)");
+
+    // initSchema should succeed — migration adds missing columns
+    expect(() => initSchema(db)).not.toThrow();
+
+    // Verify new columns exist and are queryable
+    const mem = db.query("SELECT type, archived_at FROM memories WHERE id = 1").get() as { type: string; archived_at: number | null };
+    expect(mem.type).toBe("episodic"); // ADR-005: identity type reclassified to episodic
+    expect(mem.archived_at).toBeNull();
+
+    const raw = db.query("SELECT consolidated FROM raw_events LIMIT 0").all();
+    expect(raw).toEqual([]); // column exists, no rows
+
+    // Verify getIdentityNodes works
+    const { getIdentityNodes } = require("../src/recall.ts");
+    const nodes = getIdentityNodes(db);
+    expect(nodes.length).toBe(1);
+    expect(nodes[0].role).toBe("self");
+    expect(nodes[0].content).toContain("deep convictions");
+
+    db.close();
+    try { unlinkSync(path); } catch {}
+    try { unlinkSync(path + "-wal"); } catch {}
+    try { unlinkSync(path + "-shm"); } catch {}
+  });
+});
+
+describe("ADR-005 migration", () => {
+  const cleanup: string[] = [];
+
+  afterEach(() => {
+    for (const p of cleanup) {
+      try { unlinkSync(p); } catch {}
+      try { unlinkSync(p + "-wal"); } catch {}
+      try { unlinkSync(p + "-shm"); } catch {}
+    }
+    cleanup.length = 0;
+  });
+
+  test("fresh DB has CHECK that rejects 'affective' and 'identity' inserts", () => {
+    const { db, path } = tempDb();
+    cleanup.push(path);
+
+    const now = Date.now();
+    expect(() => {
+      db.run(
+        "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
+        ["test", 0.5, now, now, "affective"]
+      );
+    }).toThrow();
+
+    expect(() => {
+      db.run(
+        "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
+        ["test", 0.5, now, now, "identity"]
+      );
+    }).toThrow();
+
+    // 'episodic' and 'fact' still accepted
+    db.run(
+      "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
+      ["ok1", 0.5, now, now, "episodic"]
+    );
+    db.run(
+      "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
+      ["ok2", 0.5, now, now, "fact"]
+    );
+    const count = (db.query("SELECT COUNT(*) as c FROM memories").get() as { c: number }).c;
+    expect(count).toBe(2);
+
+    db.close();
+  });
+
+  test("migration reclassifies identity and affective to episodic", () => {
+    // Build a pre-ADR-005 DB with the old CHECK constraint
+    const path = join(tmpdir(), `spotless-adr005-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    cleanup.push(path);
+    const db = openDb(path);
+
+    // Create table with OLD 4-type CHECK constraint
+    db.run(`CREATE TABLE memories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      content TEXT NOT NULL,
+      salience REAL NOT NULL DEFAULT 0.5,
+      created_at INTEGER NOT NULL,
+      last_accessed INTEGER NOT NULL,
+      access_count INTEGER NOT NULL DEFAULT 0,
+      type TEXT NOT NULL DEFAULT 'episodic' CHECK(type IN ('episodic','fact','affective','identity')),
+      archived_at INTEGER
+    )`);
+
+    const now = Date.now();
+    db.run(
+      "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
+      ["I am a coding agent", 0.9, now, now, "identity"]
+    );
+    db.run(
+      "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
+      ["felt frustrated", 0.6, now, now, "affective"]
+    );
+    db.run(
+      "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
+      ["user uses PostgreSQL", 0.7, now, now, "fact"]
+    );
+    db.run(
+      "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
+      ["discussed auth flow", 0.5, now, now, "episodic"]
+    );
+
+    // Run migration
+    migrateAdr005(db);
+
+    // identity and affective should be reclassified to episodic
+    const rows = db.query("SELECT id, type FROM memories ORDER BY id").all() as { id: number; type: string }[];
+    expect(rows.length).toBe(4);
+    expect(rows[0]!.type).toBe("episodic"); // was identity
+    expect(rows[1]!.type).toBe("episodic"); // was affective
+    expect(rows[2]!.type).toBe("fact");     // unchanged
+    expect(rows[3]!.type).toBe("episodic"); // unchanged
+
+    // New CHECK should reject 'identity' and 'affective'
+    expect(() => {
+      db.run(
+        "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
+        ["test", 0.5, now, now, "identity"]
+      );
+    }).toThrow();
+
+    expect(() => {
+      db.run(
+        "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
+        ["test", 0.5, now, now, "affective"]
+      );
+    }).toThrow();
+
+    db.close();
+  });
+
+  test("migration is idempotent (run twice)", () => {
+    const path = join(tmpdir(), `spotless-adr005-idem-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    cleanup.push(path);
+    const db = openDb(path);
+
+    // Create table with OLD 4-type CHECK
+    db.run(`CREATE TABLE memories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      content TEXT NOT NULL,
+      salience REAL NOT NULL DEFAULT 0.5,
+      created_at INTEGER NOT NULL,
+      last_accessed INTEGER NOT NULL,
+      access_count INTEGER NOT NULL DEFAULT 0,
+      type TEXT NOT NULL DEFAULT 'episodic' CHECK(type IN ('episodic','fact','affective','identity')),
+      archived_at INTEGER
+    )`);
+
+    const now = Date.now();
+    db.run(
+      "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
+      ["identity content", 0.9, now, now, "identity"]
+    );
+
+    // Run twice — second run should be a no-op
+    migrateAdr005(db);
+    migrateAdr005(db);
+
+    const row = db.query("SELECT type FROM memories WHERE id = 1").get() as { type: string };
+    expect(row.type).toBe("episodic");
+
+    // Schema still works
+    db.run(
+      "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
+      ["new fact", 0.5, now, now, "fact"]
+    );
+    const count = (db.query("SELECT COUNT(*) as c FROM memories").get() as { c: number }).c;
+    expect(count).toBe(2);
+
+    db.close();
+  });
+
+  test("foreign keys intact after table rebuild", () => {
+    const path = join(tmpdir(), `spotless-adr005-fk-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    cleanup.push(path);
+    const db = openDb(path);
+
+    // Set up full schema with old CHECK
+    db.run(`CREATE TABLE raw_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp INTEGER NOT NULL,
+      message_group INTEGER NOT NULL,
+      role TEXT NOT NULL,
+      content_type TEXT NOT NULL,
+      content TEXT NOT NULL,
+      is_subagent INTEGER DEFAULT 0,
+      metadata JSON,
+      consolidated INTEGER NOT NULL DEFAULT 0
+    )`);
+    db.run(`CREATE TABLE memories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      content TEXT NOT NULL,
+      salience REAL NOT NULL DEFAULT 0.5,
+      created_at INTEGER NOT NULL,
+      last_accessed INTEGER NOT NULL,
+      access_count INTEGER NOT NULL DEFAULT 0,
+      type TEXT NOT NULL DEFAULT 'episodic' CHECK(type IN ('episodic','fact','affective','identity')),
+      archived_at INTEGER
+    )`);
+    db.run(`CREATE TABLE memory_sources (
+      memory_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      raw_event_id INTEGER NOT NULL REFERENCES raw_events(id),
+      PRIMARY KEY (memory_id, raw_event_id)
+    )`);
+    db.run(`CREATE TABLE associations (
+      source_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      target_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      strength REAL NOT NULL DEFAULT 0.1,
+      reinforcement_count INTEGER NOT NULL DEFAULT 1,
+      last_reinforced INTEGER NOT NULL,
+      PRIMARY KEY (source_id, target_id),
+      CHECK (source_id < target_id)
+    )`);
+    db.run(`CREATE TABLE identity_nodes (role TEXT PRIMARY KEY, memory_id INTEGER REFERENCES memories(id) ON DELETE SET NULL)`);
+
+    const now = Date.now();
+    // Insert raw event
+    db.run(
+      "INSERT INTO raw_events (timestamp, message_group, role, content_type, content) VALUES (?, ?, ?, ?, ?)",
+      [now, 1, "user", "text", "hello"]
+    );
+    // Insert memories
+    db.run(
+      "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
+      ["mem A", 0.5, now, now, "identity"]
+    );
+    db.run(
+      "INSERT INTO memories (content, salience, created_at, last_accessed, type) VALUES (?, ?, ?, ?, ?)",
+      ["mem B", 0.7, now, now, "episodic"]
+    );
+    // Link memory to raw event
+    db.run("INSERT INTO memory_sources (memory_id, raw_event_id) VALUES (1, 1)");
+    // Create association
+    db.run("INSERT INTO associations (source_id, target_id, strength, last_reinforced) VALUES (1, 2, 0.5, ?)", [now]);
+    // Identity node
+    db.run("INSERT INTO identity_nodes (role, memory_id) VALUES ('self', 1)");
+
+    // Run migration
+    migrateAdr005(db);
+
+    // Foreign keys should still work: delete memory 1 should cascade
+    db.run("PRAGMA foreign_keys = ON");
+    db.run("DELETE FROM memories WHERE id = 1");
+
+    // memory_sources should cascade
+    const sources = (db.query("SELECT COUNT(*) as c FROM memory_sources").get() as { c: number }).c;
+    expect(sources).toBe(0);
+
+    // associations should cascade
+    const assocs = (db.query("SELECT COUNT(*) as c FROM associations").get() as { c: number }).c;
+    expect(assocs).toBe(0);
+
+    // identity_nodes should SET NULL
+    const node = db.query("SELECT memory_id FROM identity_nodes WHERE role = 'self'").get() as { memory_id: number | null };
+    expect(node.memory_id).toBeNull();
 
     db.close();
   });

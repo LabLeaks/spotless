@@ -29,11 +29,11 @@ describe("buildHippoPrompt", () => {
     const identityNodes: IdentityNode[] = [{
       id: 1, content: "I am a thorough engineer", salience: 0.9,
       created_at: Date.now(), last_accessed: Date.now(), access_count: 5,
-      type: "identity", archived_at: null, role: "self",
+      type: "episodic", archived_at: null, role: "self",
     }];
     const prompt = buildHippoPrompt({ ...baseCtx, identityNodes });
     expect(prompt).toContain("I am a thorough engineer");
-    expect(prompt).toContain("[Self, id:1]");
+    expect(prompt).toContain("[Self-Concept, id:1]");
     expect(prompt).toContain("WHO YOU ARE");
   });
 
@@ -41,23 +41,23 @@ describe("buildHippoPrompt", () => {
     const identityNodes: IdentityNode[] = [{
       id: 1, content: "Self model", salience: 0.9,
       created_at: Date.now(), last_accessed: Date.now(), access_count: 5,
-      type: "identity", archived_at: null, role: "self",
+      type: "episodic", archived_at: null, role: "self",
     }];
     const prompt = buildHippoPrompt({
       ...baseCtx,
       identityNodes,
       preComputedRecall: [
-        { id: 1, content: "Self model", salience: 0.9, created_at: Date.now(), last_accessed: Date.now(), access_count: 5, type: "identity", archived_at: null, score: 999 },
+        { id: 1, content: "Self model", salience: 0.9, created_at: Date.now(), last_accessed: Date.now(), access_count: 5, type: "episodic", archived_at: null, score: 999 },
         { id: 10, content: "Other memory", salience: 0.5, created_at: Date.now(), last_accessed: Date.now(), access_count: 0, type: "episodic", archived_at: null, score: 1.2 },
       ],
     });
     // Self model should appear in WHO YOU ARE section only
     expect(prompt).toContain("WHO YOU ARE");
-    expect(prompt).toContain("[Self, id:1] Self model");
+    expect(prompt).toContain("[Self-Concept, id:1] Self model");
     // id:1 should NOT appear in CANDIDATE MEMORIES
     expect(prompt).toContain("CANDIDATE MEMORIES");
     expect(prompt).toContain("[id:10]");
-    // Count occurrences of "[id:1]" — should only appear in working self as "[Self, id:1]"
+    // Count occurrences of "[id:1]" — should only appear in working self as "[Self-Concept, id:1]"
     const candidateSection = prompt.split("CANDIDATE MEMORIES")[1]!;
     expect(candidateSection).not.toContain("[id:1]");
   });

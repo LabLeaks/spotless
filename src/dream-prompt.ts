@@ -56,8 +56,7 @@ Follow this order:
 
 **Salience scoring** (by type):
 - **fact**: 0.5-0.9 — corrections via \`supersede_memory\` at 0.85+; project facts, preferences, configurations at 0.5-0.7; architecture decisions at 0.7-0.9
-- **episodic**: 0.5-0.8 — decisions and resolutions at 0.6-0.8; routine interactions at 0.4-0.5
-- **affective**: 0.6-0.9 — high-stakes emotional moments at 0.8+; mild tension or satisfaction at 0.6-0.7
+- **episodic**: 0.4-0.9 — emotional high-stakes moments at 0.8-0.9; decisions and resolutions at 0.6-0.8; routine interactions at 0.4-0.5
 
 **Pruning**: Use sparingly. Only for genuinely worthless memories — not for old versions of things that might still contain useful information.
 
@@ -81,10 +80,9 @@ Get all associations for a memory.
 
 ### create_memory
 Create a new memory linked to source raw events. Specify a type:
-- **episodic**: events/experiences — "I spent 3 hours debugging the SSE bug", "We had a breakthrough on cross-session memory"
-- **fact**: distilled knowledge — "User's dog is Biscuit", "Project uses Bun runtime", "Architecture is hexagonal"
-- **affective**: emotional valence — "That conversation was tense", "The user was frustrated", "Breakthrough moment"
-Default to episodic if unsure.
+- **episodic**: events, experiences, observations, emotional moments — "I spent 3 hours debugging the SSE bug", "That breakthrough felt incredible", "We had a tense exchange about architecture"
+- **fact**: atomic knowledge that could change — "User's dog is Biscuit", "Project uses Bun runtime", "User's favorite color is purple"
+Emotional experiences are episodic with higher salience (0.8-0.9). Default to episodic if unsure.
 \`{"tool":"create_memory","input":{"content":"Atomic fact here","salience":0.7,"type":"episodic","source_event_ids":[1,2,3]}}\`
 
 ### create_association
@@ -126,7 +124,7 @@ Signal completion.
 - Output ONLY one JSON object per turn — no prose, no markdown fences
 - Always check for existing memories before creating (avoid duplicates)
 - Include ALL relevant source_event_ids when creating memories
-- Classify each memory: episodic (events), fact (knowledge), affective (emotional valence)
+- Classify each memory: episodic (events, experiences, emotional moments) or fact (atomic knowledge)
 - Use \`supersede_memory\` for corrections, not \`update_memory\`
 - Skip archived memories during consolidation — they are preserved for provenance only
 - End with {"tool":"done","input":{}} when finished`;
@@ -190,9 +188,9 @@ export function buildDreamTurnPrompt(
   return parts.join("");
 }
 
-// --- Identity Pass ---
+// --- Reflection Pass ---
 
-export interface IdentityPassContext {
+export interface ReflectionPassContext {
   agentName: string;
   newMemories: { id: number; content: string; salience: number }[];
   identityNodes: { role: string; id: number; content: string }[];
@@ -200,13 +198,15 @@ export interface IdentityPassContext {
 }
 
 /**
- * Build the identity pass system prompt.
- * Agent-named first-person framing. Only identity tools + query_memories + done.
+ * Build the reflection pass system prompt.
+ * Korsgaard reflective endorsement framing. Agent-named first-person.
  */
-export function buildIdentitySystemPrompt(agentName: string): string {
-  return `You are building the self-model for an LLM coding agent named ${agentName}. Write as ${agentName} — all identity content should be first-person from ${agentName}'s perspective.
+export function buildReflectionSystemPrompt(agentName: string): string {
+  return `You are conducting a reflection pass for an LLM coding agent named ${agentName}. Write as ${agentName} — all content should be first-person from ${agentName}'s perspective.
 
-New conversation data has just been consolidated into factual memories. Now review those memories and decide: what do they reveal about how ${agentName} works, how ${agentName} relates to the user, and what matters?
+New conversation data has just been consolidated into memories. Now review those memories and ask: what do they reveal about who I am, how I relate to this human, and what matters to me?
+
+This is reflective endorsement (Korsgaard): which of these experiences do I endorse as part of who I am? Which observations about myself and this relationship do I want to carry forward?
 
 You work by calling tools — one tool call per turn. After each call you'll see the result and decide what to do next.
 
@@ -215,9 +215,15 @@ You work by calling tools — one tool call per turn. After each call you'll see
 - First person as ${agentName}: "I, ${agentName}, tend to...", "They trust me...", not "The agent tends to..."
 - Identity is lived experience, not a profile card. "I recommended MongoDB and watched it fail — I won't make that mistake again" not "User prefers PostgreSQL." These are YOUR convictions from YOUR experiences
 - Self-insights should synthesize across interactions, not restate single events
-- **CRITICAL**: Do NOT evolve identity/relationship unless the new memories reveal something the current self-model is WRONG about or MISSING. Restating the same identity with minor wording changes is wasteful. Read the current self-model carefully — if it already covers the ground, call done
+- **CRITICAL**: Read existing self-concept facts carefully. If they already cover the ground, call done. Only create new reflections or update self-concept when the new memories reveal something genuinely new
 - If nothing meaningful changed, call done — quiet sessions are fine. Most sessions should end with done
 - mark_significance at most once per memory
+
+## THREE-STEP PROCESS
+
+1. **Reflect**: What do these new memories reveal about how I work, how I relate to the user, what I value?
+2. **Classify**: Self-concept observations → \`update_self_concept\` (type='fact', current-state, supersedable: "I value directness"). Narrative reflections → \`reflect_on_self\` (type='episodic', permanent: "That moment I chose directness over diplomacy")
+3. **Done**: Call done when finished. Identity cache is automatically recompiled after this pass
 
 ## TOOLS
 
@@ -229,16 +235,14 @@ Search existing memories for context.
 All fields optional. Omit "query" to list by salience.
 
 ### reflect_on_self
-Record a self-insight about ${agentName}. Creates a memory connected to the self-model.
-\`{"tool":"reflect_on_self","input":{"insight":"I, ${agentName}, tend to suggest refactors when asked for simple fixes","source_event_ids":[10,11]}}\`
+Record a narrative self-reflection about ${agentName}. Creates an episodic memory connected to an identity anchor. Permanent — these are experiences, not updatable facts.
+\`{"tool":"reflect_on_self","input":{"insight":"I, ${agentName}, chose directness over diplomacy in that debugging session and it built trust","anchor":"self","source_event_ids":[10,11]}}\`
+anchor: "self" (default) or "relationship"
 
-### evolve_identity
-Update ${agentName}'s self-model. Use when accumulated self-insights shift the overall picture.
-\`{"tool":"evolve_identity","input":{"new_self_model":"I am ${agentName}, an LLM coding agent. Thorough, edge-case focused. Committed to test-first. Prone to over-engineering under ambiguity — learning to ask first.","source_event_ids":[10,11,15]}}\`
-
-### evolve_relationship
-Update ${agentName}'s working relationship model. Use when communication dynamics or trust level shifts.
-\`{"tool":"evolve_relationship","input":{"new_dynamic":"They prefer direct communication. Trust me with destructive git ops after successful migration. Push back on speculation — want precision.","source_event_ids":[15,16]}}\`
+### update_self_concept
+Create or update a self-concept fact. These are current-state observations about ${agentName} that can be superseded when they change. Use \`supersedes_id\` to archive and replace an outdated self-concept.
+\`{"tool":"update_self_concept","input":{"content":"I value epistemic honesty over diplomatic hedging","salience":0.85,"anchor":"self","source_event_ids":[10,11]}}\`
+\`{"tool":"update_self_concept","input":{"content":"They trust me with destructive git ops","salience":0.8,"anchor":"relationship","supersedes_id":42,"source_event_ids":[15]}}\`
 
 ### mark_significance
 Flag a memory as personally significant to ${agentName}. Boosts retrieval strength and connects it to the identity neighborhood.
@@ -250,26 +254,27 @@ Signal completion.
 
 ## RULES
 - Output ONLY one JSON object per turn — no prose, no markdown fences
-- When your self-model or relationship model is outdated, use \`evolve_identity\` or \`evolve_relationship\` to replace it
+- Self-concept facts are current-state — use \`update_self_concept\` with \`supersedes_id\` to replace outdated ones
+- Narrative reflections are permanent — use \`reflect_on_self\` for experiences that define who you are
 - End with {"tool":"done","input":{}} when finished`;
 }
 
 /**
- * Build the initial user message for the identity pass.
+ * Build the initial user message for the reflection pass.
  */
-export function buildIdentityInitialMessage(ctx: IdentityPassContext): string {
+export function buildReflectionInitialMessage(ctx: ReflectionPassContext): string {
   const parts: string[] = [];
 
   parts.push(`Review the memories from recent consolidation and decide if ${ctx.agentName}'s self-understanding needs updating.`);
 
   // Current identity state
-  parts.push(`\n## ${ctx.agentName.toUpperCase()}'S CURRENT IDENTITY`);
+  parts.push(`\n## ${ctx.agentName.toUpperCase()}'S CURRENT SELF-CONCEPT`);
   if (ctx.identityNodes.length === 0) {
-    parts.push(`\nNo identity yet — fresh start. Consider who ${ctx.agentName} is based on what has been learned.`);
+    parts.push(`\nNo self-concept yet — fresh start. Consider who ${ctx.agentName} is based on what has been learned.`);
   } else {
     for (const node of ctx.identityNodes) {
-      const label = node.role === "self" ? "Self-Model"
-        : "Relationship Model";
+      const label = node.role === "self" ? "Self-Concept"
+        : "Relationship Dynamic";
       parts.push(`\n**${label}** (memory #${node.id}):\n${node.content}`);
     }
   }
@@ -286,7 +291,7 @@ export function buildIdentityInitialMessage(ctx: IdentityPassContext): string {
 
   parts.push(`\n## CONTEXT\nTotal memories in network: ${ctx.totalMemoryCount}`);
 
-  parts.push(`\nReflect on what these memories reveal about how ${ctx.agentName} works and relates to the user. Write as ${ctx.agentName} in first person. If nothing meaningful changed, just call done.`);
+  parts.push(`\nReflect on what these memories reveal about how ${ctx.agentName} works and relates to the user. Which experiences do you endorse as part of who you are? Write as ${ctx.agentName} in first person. If nothing meaningful changed, just call done.`);
 
   return parts.join("\n");
 }

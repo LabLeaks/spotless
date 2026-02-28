@@ -1,6 +1,6 @@
 # ADR-004: Eidetic Consolidation & Memory Pressure
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-02-27
 
 ## Context
@@ -149,7 +149,7 @@ Replace `setInterval` with `setTimeout`-after-completion. After each dream pass 
 
 This eliminates the dropped-trigger problem: since each agent's next dream is scheduled only after the current one finishes, there's no race between `setInterval` and `triggerNow`. The `dreaming` Set is still useful as a safety guard but the primary scheduling is sequential.
 
-The dream loop queries the DB itself after each pass to get the current pressure — it already opens the agent's DB for dreaming, so reading consolidation status is trivial overhead.
+The dream loop reads pressure from `DreamResult.pressure` — the dreamer already computes pressure after marking groups as consolidated (TASK-3). No separate DB query needed.
 
 Trim-triggered dreams (`onEideticTrimmed`) still exist as an escalation: if the proxy detects a trim into unconsolidated territory, it can signal the dream loop to reprioritize that agent (bump to front of queue, immediate scheduling).
 
@@ -193,7 +193,7 @@ As part of this work, fix existing schema inefficiencies:
 | `dream-tools.ts` | `unconsolidatedOnly` via `NOT IN (SELECT ...)` | `WHERE consolidated = 0` + marks groups after processing |
 | `dreamer.ts` | No post-pass marking | `UPDATE raw_events SET consolidated = 1` for processed groups |
 | `db.ts` | Missing `raw_event_id` index | Add index + `consolidated` column + migration |
-| New: `fatigue.ts` | N/A | Pressure computation + fatigue signal text assembly |
+| New: `consolidation.ts` | N/A | Pressure computation, watermark queries, fatigue signal text assembly |
 
 ### What Doesn't Change
 
@@ -282,7 +282,7 @@ Single indexed query, O(1) with the `idx_raw_consolidated` index.
 
 ```sql
 -- Approximate token count of unconsolidated content
-SELECT SUM(LENGTH(content)) / 4 FROM raw_events
+SELECT SUM(LENGTH(content)) / 4.0 FROM raw_events
   WHERE consolidated = 0 AND is_subagent = 0
     AND content_type != 'thinking';
 ```

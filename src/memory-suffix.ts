@@ -15,7 +15,7 @@ const MEMORY_SUFFIX_BUDGET = 8_000; // tokens
  * Build the memory suffix text from selected memory IDs.
  *
  * Fetches memory content in chronological order (created_at ASC),
- * renders as `<your memories>...</your memories>`.
+ * renders as `<relevant knowledge>...</relevant knowledge>`.
  * Budget-bounded — stops adding memories when budget exceeded.
  *
  * Returns empty string if no IDs or no memories found.
@@ -39,7 +39,7 @@ export function buildMemorySuffix(
   // Add memories until budget exceeded
   const lines: string[] = [];
   let tokensUsed = 0;
-  const overhead = estimateTokens("<your memories>\n\n</your memories>\n\n");
+  const overhead = estimateTokens("<relevant knowledge>\n\n</relevant knowledge>\n\n");
 
   for (const mem of memories) {
     const memTokens = estimateTokens(mem.content);
@@ -50,7 +50,7 @@ export function buildMemorySuffix(
 
   if (lines.length === 0) return "";
 
-  return `<your memories>\n${lines.join("\n")}\n</your memories>\n\n`;
+  return `<relevant knowledge>\n${lines.join("\n")}\n</relevant knowledge>\n\n`;
 }
 
 /**

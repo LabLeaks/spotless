@@ -108,7 +108,7 @@ describe.skipIf(!EVAL)("dream-eval-identity", () => {
       expect(result.memoriesCreated).toBeGreaterThan(0);
 
       // Identity pass should have run and produced ops
-      expect(result.identityOps).toBeGreaterThan(0);
+      expect(result.reflectionOps).toBeGreaterThan(0);
 
       // Check identity nodes in DB
       const evalDb = openDb(dbPath);

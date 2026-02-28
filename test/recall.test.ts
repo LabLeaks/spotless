@@ -9,7 +9,7 @@ import {
   touchMemories,
   logRetrieval,
 } from "../src/recall.ts";
-import { createMemory, createAssociation, evolveIdentity, evolveRelationship } from "../src/dream-tools.ts";
+import { createMemory, createAssociation } from "../src/dream-tools.ts";
 import type { Memory } from "../src/types.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -242,8 +242,10 @@ describe("getIdentityNodes", () => {
 
   test("returns memories with roles for all registered identity nodes", () => {
     // Set up both identity nodes (self + relationship)
-    evolveIdentity(db, "Test-first engineer", []);
-    evolveRelationship(db, "Direct communication", []);
+    const selfId = createMemory(db, "Test-first engineer", 0.9, []);
+    db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES (?, ?)", ["self", selfId]);
+    const relId = createMemory(db, "Direct communication", 0.85, []);
+    db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES (?, ?)", ["relationship", relId]);
 
     const nodes = getIdentityNodes(db);
     expect(nodes.length).toBe(2);
@@ -265,7 +267,8 @@ describe("getIdentityNodes", () => {
   });
 
   test("returns partial when only some nodes registered", () => {
-    evolveIdentity(db, "Self model only", []);
+    const selfId = createMemory(db, "Self model only", 0.9, []);
+    db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES (?, ?)", ["self", selfId]);
 
     const nodes = getIdentityNodes(db);
     expect(nodes.length).toBe(1);
@@ -274,9 +277,13 @@ describe("getIdentityNodes", () => {
   });
 
   test("skips archived identity nodes", () => {
-    // Create identity, then evolve (archives old)
-    const { newId: oldId } = evolveIdentity(db, "Self v1", []);
-    const { newId: newSelfId } = evolveIdentity(db, "Self v2", []);
+    // Create old identity and archive it (simulates evolveIdentity replacing v1 with v2)
+    const oldId = createMemory(db, "Self v1", 0.9, []);
+    db.run("UPDATE memories SET archived_at = ? WHERE id = ?", [Date.now(), oldId]);
+
+    // Create new current identity
+    const newSelfId = createMemory(db, "Self v2", 0.9, []);
+    db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES (?, ?)", ["self", newSelfId]);
 
     // Old should be archived
     const old = db.query("SELECT archived_at FROM memories WHERE id = ?").get(oldId) as any;

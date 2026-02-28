@@ -98,7 +98,7 @@ describe.skipIf(!EVAL)("identity-e2e", () => {
       const suffix = buildMemorySuffix(db, result.memoryIds);
       console.log("[e2e] Memory suffix:\n", suffix);
 
-      expect(suffix).toContain("<your memories>");
+      expect(suffix).toContain("<relevant knowledge>");
       expect(suffix).toContain("iris"); // agent name from self-model
       expect(suffix).toContain("simplest solution"); // distinctive self-model content
     } finally {

@@ -195,11 +195,9 @@ function cmdStart(port: number, noDream: boolean): void {
     dreamLoop = createDreamLoop();
     dreamLoop.start(() => proxy.getAgentNames());
 
-    // Wire trim-triggered dreaming: when eidetic budget drops messages, dream immediately
+    // Wire trim-triggered dreaming: when pressure is high and trim occurred, escalate
     proxy.onEideticTrimmed = (agentName: string) => {
-      dreamLoop!.triggerNow(agentName).catch(err => {
-        console.error(`[dream] Trim-triggered dream error for ${agentName}:`, err);
-      });
+      dreamLoop!.escalate(agentName);
     };
   }
 

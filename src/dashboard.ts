@@ -12,6 +12,7 @@ import { openReadonlyDb } from "./db.ts";
 import { queryMemories, getAssociations } from "./dream-tools.ts";
 import { getIdentityNodes } from "./recall.ts";
 import type { AgentContext, ProxyStats } from "./proxy.ts";
+import { getConsolidationStatus, getConsolidationPressure, getPressureLevel, getIntervalForPressure } from "./consolidation.ts";
 
 // --- Route handler ---
 
@@ -97,6 +98,10 @@ export function handleDashboardRequest(
         return jsonResponse(apiAgentEidetic(db, limit, offset, q));
       }
 
+      if (sub === "consolidation") {
+        return jsonResponse(apiAgentConsolidation(db));
+      }
+
       return jsonResponse({ error: "Unknown endpoint" }, 404);
     } finally {
       db.close();
@@ -165,6 +170,8 @@ function apiAgents() {
     let lastDream: number | null = null;
     let lastHippo: number | null = null;
     let typeCounts: Record<string, number> = {};
+    let pressure = 0;
+    let pressureLevel: string = "none";
 
     try {
       const db = openReadonlyDb(a.dbPath);
@@ -184,6 +191,14 @@ function apiAgents() {
         } catch {
           // type column may not exist on very old DBs
         }
+        // Consolidation pressure
+        try {
+          const { pressure: p } = getConsolidationPressure(db);
+          pressure = p;
+          pressureLevel = getPressureLevel(p);
+        } catch {
+          // consolidated column may not exist on very old DBs
+        }
       } finally {
         db.close();
       }
@@ -199,6 +214,8 @@ function apiAgents() {
       lastDream,
       lastHippo,
       typeCounts,
+      pressure,
+      pressureLevel,
     };
   });
 }
@@ -278,6 +295,26 @@ function apiAgentHippo(db: Database, limit: number) {
       avgDurationMs: avgRow.avg_ms ? Math.round(avgRow.avg_ms) : null,
       avgMemoryCount: avgRow.avg_count ? Math.round(avgRow.avg_count * 10) / 10 : null,
     },
+  };
+}
+
+function apiAgentConsolidation(db: Database) {
+  const status = getConsolidationStatus(db);
+  const level = getPressureLevel(status.pressure);
+  const interval = getIntervalForPressure(status.pressure);
+
+  return {
+    watermark: status.watermark,
+    pressure: status.pressure,
+    pressureLevel: level,
+    unconsolidatedTokens: Math.round(status.unconsolidatedTokens),
+    totalGroups: status.totalGroups,
+    consolidatedGroups: status.consolidatedGroups,
+    unconsolidatedGroups: status.totalGroups - status.consolidatedGroups,
+    expectedIntervalMs: interval,
+    expectedInterval: interval === 0 ? "immediate" :
+      interval < 60000 ? `${interval / 1000}s` :
+      `${interval / 60000}min`,
   };
 }
 
@@ -394,6 +431,7 @@ function renderIndexPage(stats: ProxyStats): string {
               <span>Last hippo: \${a.lastHippo ? timeAgo(a.lastHippo) : 'never'}</span>
             </div>
             \${typeBreakdown ? '<div class="agent-types">' + typeBreakdown + '</div>' : ''}
+            \${a.pressure > 0 ? '<div class="agent-pressure pressure-' + a.pressureLevel + '"><span class="pressure-dot"></span> Pressure: ' + (a.pressure * 100).toFixed(0) + '% (' + a.pressureLevel + ')</div>' : ''}
           </a>
         \`}).join('');
       })
@@ -439,6 +477,7 @@ function renderAgentPage(agentName: string): string {
     <button class="tab" data-tab="identity">Identity</button>
     <button class="tab" data-tab="dreams">Dreams</button>
     <button class="tab" data-tab="hippo">Hippocampus</button>
+    <button class="tab" data-tab="health">Health</button>
   </nav>
 
   <!-- Memories Tab -->
@@ -452,8 +491,6 @@ function renderAgentPage(agentName: string): string {
         <option value="">All types</option>
         <option value="episodic">episodic</option>
         <option value="fact">fact</option>
-        <option value="affective">affective</option>
-        <option value="identity">identity</option>
       </select>
       <label><input type="checkbox" id="show-archived" /> Show archived</label>
       <button id="search-btn">Search</button>
@@ -496,6 +533,13 @@ function renderAgentPage(agentName: string): string {
     <div id="hippo-table"></div>
   </section>
 
+  <!-- Health Tab -->
+  <section id="tab-health" class="tab-content">
+    <div id="health-content">
+      <p class="loading">Loading consolidation status...</p>
+    </div>
+  </section>
+
   <script>
     const AGENT = '${agentName}';
 
@@ -510,6 +554,7 @@ function renderAgentPage(agentName: string): string {
         if (btn.dataset.tab === 'identity') loadIdentity();
         if (btn.dataset.tab === 'dreams') loadDreams();
         if (btn.dataset.tab === 'hippo') loadHippo();
+        if (btn.dataset.tab === 'health') loadHealth();
       });
     });
 
@@ -832,6 +877,47 @@ function renderAgentPage(agentName: string): string {
         });
     }
 
+    // --- Health ---
+    function loadHealth() {
+      fetch('/_dashboard/api/agent/' + AGENT + '/consolidation')
+        .then(r => r.json())
+        .then(data => {
+          const container = document.getElementById('health-content');
+          const pct = (data.pressure * 100).toFixed(1);
+          const levelClass = 'pressure-' + data.pressureLevel;
+
+          let html = '<div class="health-grid">';
+
+          // Pressure gauge
+          html += '<div class="health-card">';
+          html += '<h3>Consolidation Pressure</h3>';
+          html += '<div class="pressure-gauge">';
+          html += '<div class="pressure-bar ' + levelClass + '" style="width:' + Math.min(100, parseFloat(pct)) + '%"></div>';
+          html += '</div>';
+          html += '<div class="pressure-label ' + levelClass + '">' + pct + '% <span class="pressure-level">' + data.pressureLevel + '</span></div>';
+          html += '</div>';
+
+          // Stats
+          html += '<div class="health-card">';
+          html += '<h3>Consolidation Stats</h3>';
+          html += '<div class="health-stats">';
+          html += '<div class="stat-row"><span class="stat-label">Watermark</span><span class="stat-value">' + (data.watermark !== null ? 'group ' + data.watermark : 'none') + '</span></div>';
+          html += '<div class="stat-row"><span class="stat-label">Unconsolidated tokens</span><span class="stat-value">' + Math.round(data.unconsolidatedTokens / 1000) + 'k</span></div>';
+          html += '<div class="stat-row"><span class="stat-label">Groups consolidated</span><span class="stat-value">' + data.consolidatedGroups + ' / ' + data.totalGroups + '</span></div>';
+          html += '<div class="stat-row"><span class="stat-label">Unconsolidated groups</span><span class="stat-value">' + data.unconsolidatedGroups + '</span></div>';
+          html += '<div class="stat-row"><span class="stat-label">Dream interval</span><span class="stat-value">' + data.expectedInterval + '</span></div>';
+          html += '</div>';
+          html += '</div>';
+
+          html += '</div>';
+          container.innerHTML = html;
+        })
+        .catch(err => {
+          document.getElementById('health-content').innerHTML =
+            '<p class="error">Failed to load health data: ' + err.message + '</p>';
+        });
+    }
+
     // --- Utilities ---
     function escapeHtml(s) {
       return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -1130,8 +1216,6 @@ const STYLES = `<style>
   }
   .type-episodic { background: #1a4731; color: #7ee787; }
   .type-fact { background: #3d2b00; color: #ffa657; }
-  .type-affective { background: #3b1f5e; color: #d2a8ff; }
-  .type-identity { background: #0c2d6b; color: #79c0ff; }
 
   .archived-badge {
     display: inline-block;
@@ -1146,7 +1230,69 @@ const STYLES = `<style>
   .archived-row { opacity: 0.6; }
   .agent-types { display: flex; gap: 8px; margin-top: 4px; font-size: 0.8em; }
 
+  .agent-pressure { margin-top: 4px; font-size: 0.8em; display: flex; align-items: center; gap: 4px; }
+  .agent-pressure.pressure-none { color: #7ee787; }
+  .agent-pressure.pressure-moderate { color: #e3b341; }
+  .agent-pressure.pressure-high { color: #f85149; }
+  .pressure-dot {
+    width: 6px; height: 6px; border-radius: 50%; display: inline-block;
+  }
+  .pressure-none .pressure-dot { background: #238636; }
+  .pressure-moderate .pressure-dot { background: #d29922; }
+  .pressure-high .pressure-dot { background: #f85149; }
+
   .error-cell { color: #f85149; text-align: center; }
+
+  .health-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+
+  .health-card {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 16px;
+  }
+
+  .pressure-gauge {
+    height: 12px;
+    background: #21262d;
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 12px 0 8px;
+  }
+
+  .pressure-bar {
+    height: 100%;
+    border-radius: 6px;
+    transition: width 0.3s;
+  }
+
+  .pressure-none .pressure-bar, .pressure-bar.pressure-none { background: #238636; }
+  .pressure-moderate .pressure-bar, .pressure-bar.pressure-moderate { background: #d29922; }
+  .pressure-high .pressure-bar, .pressure-bar.pressure-high { background: #f85149; }
+
+  .pressure-label { font-size: 1.2em; font-weight: bold; }
+  .pressure-label.pressure-none { color: #7ee787; }
+  .pressure-label.pressure-moderate { color: #e3b341; }
+  .pressure-label.pressure-high { color: #f85149; }
+
+  .pressure-level { font-size: 0.7em; font-weight: normal; color: #8b949e; }
+
+  .health-stats { margin-top: 8px; }
+
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid #21262d;
+    font-size: 0.9em;
+  }
+
+  .stat-label { color: #8b949e; }
+  .stat-value { color: #f0f6fc; font-weight: 500; }
 
   .loading { color: #8b949e; font-style: italic; }
   .empty { color: #8b949e; }

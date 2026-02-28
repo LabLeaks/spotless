@@ -126,7 +126,7 @@ export interface RawEvent {
 
 // --- Tier 2: Engram Network types ---
 
-export type MemoryType = "episodic" | "fact" | "affective" | "identity";
+export type MemoryType = "episodic" | "fact";
 
 export interface Memory {
   id: number;
@@ -212,9 +212,11 @@ export interface DreamResult {
   memoriesPruned: number;
   memoriesSuperseded: number;
   associationsCreated: number;
-  identityOps: number;
+  reflectionOps: number;
   errors: string[];
   durationMs: number;
+  groupsConsolidated: number;
+  pressure: number;
 }
 
 // --- Hippocampus Result ---

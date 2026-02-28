@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS raw_events (
   content_type TEXT NOT NULL,
   content TEXT NOT NULL,
   is_subagent INTEGER DEFAULT 0,
-  metadata JSON
+  metadata JSON,
+  consolidated INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_raw_timestamp ON raw_events(timestamp);
@@ -25,6 +26,7 @@ CREATE INDEX IF NOT EXISTS idx_raw_not_thinking ON raw_events(timestamp) WHERE c
 CREATE INDEX IF NOT EXISTS idx_raw_human_turns ON raw_events(id) WHERE role = 'user' AND content_type = 'text' AND is_subagent = 0;
 CREATE INDEX IF NOT EXISTS idx_raw_message_group ON raw_events(message_group);
 `;
+// NOTE: idx_raw_consolidated is created in migrateConsolidated() after the column is added
 
 // --- Tier 2: Engram Network ---
 
@@ -36,7 +38,7 @@ CREATE TABLE IF NOT EXISTS memories (
   created_at INTEGER NOT NULL,
   last_accessed INTEGER NOT NULL,
   access_count INTEGER NOT NULL DEFAULT 0,
-  type TEXT NOT NULL DEFAULT 'episodic' CHECK(type IN ('episodic','fact','affective','identity')),
+  type TEXT NOT NULL DEFAULT 'episodic' CHECK(type IN ('episodic','fact')),
   archived_at INTEGER
 );
 
@@ -69,11 +71,12 @@ CREATE TABLE IF NOT EXISTS retrieval_log_entries (
 
 CREATE INDEX IF NOT EXISTS idx_memories_salience ON memories(salience DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_accessed ON memories(last_accessed DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_sources_raw_event ON memory_sources(raw_event_id);
 CREATE INDEX IF NOT EXISTS idx_assoc_strength ON associations(strength DESC);
 CREATE INDEX IF NOT EXISTS idx_assoc_source ON associations(source_id, strength DESC);
 CREATE INDEX IF NOT EXISTS idx_assoc_target ON associations(target_id, strength DESC);
 
--- Working Self: 3-row registry pointing into the memory graph
+-- Working Self: 2-row registry pointing into the memory graph
 CREATE TABLE IF NOT EXISTS identity_nodes (
   role TEXT PRIMARY KEY,
   memory_id INTEGER REFERENCES memories(id) ON DELETE SET NULL
@@ -173,7 +176,7 @@ export function openReadonlyDb(dbPath: string): Database {
 export function migrateMemoryTypes(db: Database): void {
   // Add columns (try/catch for idempotent — column may already exist)
   try {
-    db.run("ALTER TABLE memories ADD COLUMN type TEXT NOT NULL DEFAULT 'episodic' CHECK(type IN ('episodic','fact','affective','identity'))");
+    db.run("ALTER TABLE memories ADD COLUMN type TEXT NOT NULL DEFAULT 'episodic' CHECK(type IN ('episodic','fact'))");
   } catch {
     // Column already exists
   }
@@ -184,12 +187,9 @@ export function migrateMemoryTypes(db: Database): void {
     // Column already exists
   }
 
-  // Classify: identity_nodes references → type='identity'
-  db.run(`
-    UPDATE memories SET type = 'identity'
-    WHERE id IN (SELECT memory_id FROM identity_nodes WHERE memory_id IS NOT NULL)
-      AND type != 'identity'
-  `);
+  // Note: identity_nodes references were previously classified as type='identity',
+  // but ADR-005 removed that type. Identity is now a structural role (identity_nodes table),
+  // not a memory type. No reclassification needed here — migrateAdr005 handles old DBs.
 
   // Classify: [SUPERSEDED] content → type='fact', archived_at=created_at
   db.run(`
@@ -212,6 +212,89 @@ export function migrateMemoryTypes(db: Database): void {
     } catch {
       // May not be in FTS5
     }
+  }
+}
+
+/**
+ * Migrate existing databases: add consolidated column to raw_events.
+ * Backfills from memory_sources: any raw_event linked to a memory is considered consolidated.
+ * Idempotent — safe to run on both fresh and existing databases.
+ */
+export function migrateConsolidated(db: Database): void {
+  // Add column (try/catch for idempotent — column may already exist)
+  try {
+    db.run("ALTER TABLE raw_events ADD COLUMN consolidated INTEGER NOT NULL DEFAULT 0");
+  } catch {
+    // Column already exists
+  }
+
+  // Backfill: events linked via memory_sources are already consolidated
+  db.run(`
+    UPDATE raw_events SET consolidated = 1
+    WHERE consolidated = 0
+      AND id IN (SELECT DISTINCT raw_event_id FROM memory_sources)
+  `);
+
+  // Create indexes if not exists
+  db.run("CREATE INDEX IF NOT EXISTS idx_raw_consolidated ON raw_events(consolidated, message_group) WHERE is_subagent = 0");
+  db.run("CREATE INDEX IF NOT EXISTS idx_memory_sources_raw_event ON memory_sources(raw_event_id)");
+}
+
+/**
+ * Migrate from ADR-003 (4 types) to ADR-005 (2 types).
+ * Reclassifies identity/affective → episodic, rebuilds table with new CHECK constraint.
+ * Idempotent — safe to run on databases already migrated.
+ */
+export function migrateAdr005(db: Database): void {
+  // Check if migration is needed: does the table's CHECK still allow 'affective'?
+  const tableInfo = db.query(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='memories'"
+  ).get() as { sql: string } | null;
+
+  if (!tableInfo) return; // Table doesn't exist yet — fresh DB, TIER2_SCHEMA handles it
+  if (!tableInfo.sql.includes("affective")) return; // Already migrated
+
+  // SQLite can't ALTER CHECK constraints — rebuild the table
+  db.run("PRAGMA foreign_keys = OFF");
+
+  db.transaction(() => {
+    // Reclassify types before rebuild
+    db.run("UPDATE memories SET type = 'episodic' WHERE type IN ('identity', 'affective')");
+
+    // Create new table with correct CHECK constraint
+    db.run(`
+      CREATE TABLE memories_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        content TEXT NOT NULL,
+        salience REAL NOT NULL DEFAULT 0.5,
+        created_at INTEGER NOT NULL,
+        last_accessed INTEGER NOT NULL,
+        access_count INTEGER NOT NULL DEFAULT 0,
+        type TEXT NOT NULL DEFAULT 'episodic' CHECK(type IN ('episodic','fact')),
+        archived_at INTEGER
+      )
+    `);
+
+    // Copy data
+    db.run("INSERT INTO memories_new SELECT * FROM memories");
+
+    // Drop old table (FKs are OFF, so no CASCADE issues)
+    db.run("DROP TABLE memories");
+
+    // Rename
+    db.run("ALTER TABLE memories_new RENAME TO memories");
+
+    // Recreate indexes
+    db.run("CREATE INDEX IF NOT EXISTS idx_memories_salience ON memories(salience DESC)");
+    db.run("CREATE INDEX IF NOT EXISTS idx_memories_accessed ON memories(last_accessed DESC)");
+  })();
+
+  db.run("PRAGMA foreign_keys = ON");
+
+  // Verify foreign keys are intact
+  const fkErrors = db.query("PRAGMA foreign_key_check").all();
+  if (fkErrors.length > 0) {
+    console.error("[spotless] Foreign key check errors after ADR-005 migration:", fkErrors);
   }
 }
 
@@ -256,11 +339,20 @@ export function initSchema(db: Database): void {
     db.run(MEMORIES_FTS5_SCHEMA);
   }
 
-  // Always rebuild triggers to ensure archive-aware versions
+  // Migrate existing DBs: add type/archived_at columns, classify rows
+  // MUST run before trigger rebuild — triggers reference archived_at
+  migrateMemoryTypes(db);
+
+  // Migrate from ADR-003 (4 types) to ADR-005 (2 types)
+  // MUST run after migrateMemoryTypes (needs type/archived_at columns)
+  // MUST run before trigger rebuild (table structure may change)
+  migrateAdr005(db);
+
+  // Rebuild triggers to ensure archive-aware versions
   rebuildMemoriesFtsTriggers(db);
 
-  // Migrate existing DBs: add type/archived_at columns, classify rows
-  migrateMemoryTypes(db);
+  // Migrate existing DBs: add consolidated column to raw_events, backfill from memory_sources
+  migrateConsolidated(db);
 }
 
 /**

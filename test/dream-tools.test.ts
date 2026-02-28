@@ -14,8 +14,8 @@ import {
   drainRetrievalLog,
   supersedeMemory,
   reflectOnSelf,
-  evolveIdentity,
-  evolveRelationship,
+  updateSelfConcept,
+  recompileIdentityCache,
   markSignificance,
   cleanupConsolidatedFromFts,
 } from "../src/dream-tools.ts";
@@ -214,20 +214,23 @@ describe("dream-tools", () => {
       db.close();
     });
 
-    test("unconsolidatedOnly excludes events with memory_sources links", () => {
+    test("unconsolidatedOnly excludes events with consolidated = 1", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      const ev1 = insertRawEvent(db, 1, "user", "text", "consolidated msg");
+      insertRawEvent(db, 1, "user", "text", "consolidated msg");
       insertRawEvent(db, 2, "user", "text", "new msg");
 
-      // Link ev1 to a memory
-      const memId = insertMemory(db, "test mem", 0.5);
-      db.run("INSERT INTO memory_sources (memory_id, raw_event_id) VALUES (?, ?)", [memId, ev1]);
+      // Mark group 1 as consolidated directly
+      db.run("UPDATE raw_events SET consolidated = 1 WHERE message_group = 1");
 
       const groups = queryRawEvents(db, { unconsolidatedOnly: true });
       expect(groups.length).toBe(1);
       expect(groups[0]!.message_group).toBe(2);
+
+      // Without flag, both groups returned
+      const allGroups = queryRawEvents(db);
+      expect(allGroups.length).toBe(2);
 
       db.close();
     });
@@ -861,8 +864,9 @@ describe("dream-tools", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      // Create self-model via evolveIdentity
-      const { newId: selfId } = evolveIdentity(db, "Test-first engineer", []);
+      // Create self-model node directly
+      const selfId = insertMemory(db, "Test-first engineer", 0.9);
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [selfId]);
 
       const { newId } = reflectOnSelf(db, "I tend to over-engineer", []);
 
@@ -870,6 +874,28 @@ describe("dream-tools", () => {
       const selfAssoc = assocs.find(a => a.connected_id === selfId);
       expect(selfAssoc).toBeDefined();
       expect(selfAssoc!.strength).toBe(0.8);
+
+      db.close();
+    });
+
+    test("anchor='relationship' associates with relationship node", () => {
+      const { db, path } = tempDb();
+      cleanup.push(path);
+
+      // Create relationship node
+      const relId = insertMemory(db, "Collaborative dynamic", 0.85);
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('relationship', ?)", [relId]);
+
+      const { newId } = reflectOnSelf(db, "We work well on debugging together", [], "relationship");
+
+      const mem = db.query("SELECT * FROM memories WHERE id = ?").get(newId) as any;
+      expect(mem.content).toBe("We work well on debugging together");
+      expect(mem.salience).toBe(0.85);
+
+      const assocs = getAssociations(db, newId);
+      const relAssoc = assocs.find(a => a.connected_id === relId);
+      expect(relAssoc).toBeDefined();
+      expect(relAssoc!.strength).toBe(0.8);
 
       db.close();
     });
@@ -906,222 +932,223 @@ describe("dream-tools", () => {
     });
   });
 
-  describe("evolveIdentity", () => {
-    test("fresh creation: no existing → creates at 0.9, inserts registry", () => {
+  describe("updateSelfConcept", () => {
+    test("creates a fact memory with anchor association", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      const { newId, previousId } = evolveIdentity(db, "Thorough, test-first", []);
+      // Set up a self identity node so anchor association can be created
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', NULL)");
+      const selfMemId = insertMemory(db, "I am a test agent", 0.9);
+      db.run("UPDATE identity_nodes SET memory_id = ? WHERE role = 'self'", [selfMemId]);
 
-      expect(previousId).toBeNull();
+      const { newId, archivedId } = updateSelfConcept(db, "I prefer TypeScript", 0.7, "self", []);
+
+      expect(archivedId).toBeUndefined();
 
       const mem = db.query("SELECT * FROM memories WHERE id = ?").get(newId) as any;
-      expect(mem.content).toBe("Thorough, test-first");
-      expect(mem.salience).toBe(0.9);
+      expect(mem.content).toBe("I prefer TypeScript");
+      expect(mem.salience).toBe(0.7);
+      expect(mem.type).toBe("fact");
 
-      const reg = db.query("SELECT memory_id FROM identity_nodes WHERE role = 'self'").get() as any;
-      expect(reg.memory_id).toBe(newId);
+      // Should be associated to the self anchor node
+      const assocs = getAssociations(db, newId);
+      const selfAssoc = assocs.find(a => a.connected_id === selfMemId);
+      expect(selfAssoc).toBeDefined();
+      expect(selfAssoc!.strength).toBe(0.8);
 
       db.close();
     });
 
-    test("evolution: old archived, new at 0.9 with type=identity", () => {
+    test("supersedes with supersedesId: archives old, creates fact", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      const { newId: oldId } = evolveIdentity(db, "Self v1", []);
-      const { newId, previousId } = evolveIdentity(db, "Self v2", []);
+      // Set up relationship anchor
+      const relMemId = insertMemory(db, "Relationship node", 0.85);
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('relationship', ?)", [relMemId]);
 
-      expect(previousId).toBe(oldId);
+      const oldId = insertMemory(db, "User prefers tabs", 0.6);
+      const { newId, archivedId } = updateSelfConcept(db, "User prefers spaces", 0.75, "relationship", [], oldId);
 
+      expect(archivedId).toBe(oldId);
+
+      // New memory is a fact
       const newMem = db.query("SELECT * FROM memories WHERE id = ?").get(newId) as any;
-      expect(newMem.salience).toBe(0.9);
-      expect(newMem.type).toBe("identity");
+      expect(newMem.content).toBe("User prefers spaces");
+      expect(newMem.type).toBe("fact");
       expect(newMem.archived_at).toBeNull();
 
-      // Old memory archived (not deleted) — preserved for provenance
+      // Old memory is archived
       const oldMem = db.query("SELECT * FROM memories WHERE id = ?").get(oldId) as any;
-      expect(oldMem).not.toBeNull();
-      expect(oldMem.archived_at).not.toBeNull();
-      expect(oldMem.content).toBe("Self v1");
-
-      db.close();
-    });
-
-    test("associations transferred old → new, old archived", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
-
-      const { newId: selfId } = evolveIdentity(db, "Self v1", []);
-      const relatedId = insertMemory(db, "related insight", 0.6);
-      createAssociation(db, selfId, relatedId, 0.5);
-
-      const { newId } = evolveIdentity(db, "Self v2", []);
-
-      // New memory got the association
-      const newAssocs = getAssociations(db, newId);
-      const relatedAssoc = newAssocs.find(a => a.connected_id === relatedId);
-      expect(relatedAssoc).toBeDefined();
-      expect(relatedAssoc!.strength).toBe(0.5);
-
-      // Old memory archived (not deleted)
-      const oldMem = db.query("SELECT * FROM memories WHERE id = ?").get(selfId) as any;
-      expect(oldMem).not.toBeNull();
       expect(oldMem.archived_at).not.toBeNull();
 
-      db.close();
-    });
-
-    test("registry points to new memory after evolution", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
-
-      evolveIdentity(db, "Self v1", []);
-      const { newId } = evolveIdentity(db, "Self v2", []);
-
-      const reg = db.query("SELECT memory_id FROM identity_nodes WHERE role = 'self'").get() as any;
-      expect(reg.memory_id).toBe(newId);
+      // Associated to relationship anchor
+      const assocs = getAssociations(db, newId);
+      const relAssoc = assocs.find(a => a.connected_id === relMemId);
+      expect(relAssoc).toBeDefined();
+      expect(relAssoc!.strength).toBe(0.8);
 
       db.close();
     });
 
-    test("M5: transfers memory_sources from old to new", () => {
+    test("works without anchor node in registry", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      const ev1 = insertRawEvent(db, 1, "user", "text", "original insight");
-      const ev2 = insertRawEvent(db, 2, "user", "text", "new insight");
-      evolveIdentity(db, "Self v1", [ev1]);
-      const { newId } = evolveIdentity(db, "Self v2", [ev2]);
+      const { newId } = updateSelfConcept(db, "A fact about me", 0.6, "self", []);
 
-      // New memory should have both old and new source links
-      const sources = db.query(
-        "SELECT raw_event_id FROM memory_sources WHERE memory_id = ? ORDER BY raw_event_id"
-      ).all(newId) as { raw_event_id: number }[];
-      expect(sources.length).toBe(2);
-      expect(sources.map(s => s.raw_event_id)).toEqual([ev1, ev2]);
+      const mem = db.query("SELECT * FROM memories WHERE id = ?").get(newId) as any;
+      expect(mem.content).toBe("A fact about me");
+      expect(mem.type).toBe("fact");
 
-      db.close();
-    });
-
-    test("multiple evolutions: old versions archived, only latest active", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
-
-      const { newId: id1 } = evolveIdentity(db, "Self v1", []);
-      const { newId: id2 } = evolveIdentity(db, "Self v2", []);
-      const { newId: id3 } = evolveIdentity(db, "Self v3", []);
-
-      // Old versions archived
-      const v1 = db.query("SELECT archived_at FROM memories WHERE id = ?").get(id1) as any;
-      expect(v1.archived_at).not.toBeNull();
-      const v2 = db.query("SELECT archived_at FROM memories WHERE id = ?").get(id2) as any;
-      expect(v2.archived_at).not.toBeNull();
-
-      // Latest version is current (not archived)
-      const v3Mem = db.query("SELECT salience, archived_at FROM memories WHERE id = ?").get(id3) as any;
-      expect(v3Mem.salience).toBe(0.9);
-      expect(v3Mem.archived_at).toBeNull();
-
-      // Registry points to latest
-      const reg = db.query("SELECT memory_id FROM identity_nodes WHERE role = 'self'").get() as any;
-      expect(reg.memory_id).toBe(id3);
+      // No associations since no anchor node
+      const assocs = getAssociations(db, newId);
+      expect(assocs.length).toBe(0);
 
       db.close();
     });
   });
 
-  describe("evolveRelationship", () => {
-    test("fresh creation at 0.85, previousId null", () => {
+  describe("recompileIdentityCache", () => {
+    test("assembles compiled content from graph neighbors", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      const { newId, previousId } = evolveRelationship(db, "Formal, cautious", []);
+      // Create an initial self identity cache node
+      const cacheId = insertMemory(db, "old self cache", 0.9);
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [cacheId]);
 
-      expect(previousId).toBeNull();
+      // Create neighbor memories and associate them to the cache node
+      const m1 = insertMemory(db, "I am thorough and detail-oriented", 0.8);
+      const m2 = insertMemory(db, "I prefer test-first development", 0.7);
+      createAssociation(db, cacheId, m1, 0.7);
+      createAssociation(db, cacheId, m2, 0.6);
 
-      const mem = db.query("SELECT * FROM memories WHERE id = ?").get(newId) as any;
-      expect(mem.content).toBe("Formal, cautious");
-      expect(mem.salience).toBe(0.85);
+      const { newCacheId, previousCacheId } = recompileIdentityCache(db, "self");
 
-      const reg = db.query("SELECT memory_id FROM identity_nodes WHERE role = 'relationship'").get() as any;
-      expect(reg.memory_id).toBe(newId);
+      expect(previousCacheId).toBe(cacheId);
+      expect(newCacheId).not.toBe(cacheId);
 
-      db.close();
-    });
+      // New cache should contain compiled content from neighbors (sorted by salience DESC)
+      const newMem = db.query("SELECT content, salience FROM memories WHERE id = ?").get(newCacheId) as any;
+      expect(newMem.content).toContain("I am thorough and detail-oriented");
+      expect(newMem.content).toContain("I prefer test-first development");
+      expect(newMem.salience).toBe(0.9); // self role gets 0.9
 
-    test("evolution: old archived, new at 0.85 with type=identity", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
+      // Registry should point to new cache
+      const reg = db.query("SELECT memory_id FROM identity_nodes WHERE role = 'self'").get() as any;
+      expect(reg.memory_id).toBe(newCacheId);
 
-      const { newId: oldId } = evolveRelationship(db, "Rel v1", []);
-      const { newId, previousId } = evolveRelationship(db, "Rel v2", []);
-
-      expect(previousId).toBe(oldId);
-
-      const newMem = db.query("SELECT * FROM memories WHERE id = ?").get(newId) as any;
-      expect(newMem.salience).toBe(0.85);
-      expect(newMem.type).toBe("identity");
-
-      // Old archived (not deleted)
-      const oldMem = db.query("SELECT * FROM memories WHERE id = ?").get(oldId) as any;
-      expect(oldMem).not.toBeNull();
+      // Old cache should be archived
+      const oldMem = db.query("SELECT archived_at FROM memories WHERE id = ?").get(cacheId) as any;
       expect(oldMem.archived_at).not.toBeNull();
 
       db.close();
     });
 
-    test("works when no registry entry exists", () => {
+    test("minimal content when no graph neighbors", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      // No prior relationship node
-      const { newId, previousId } = evolveRelationship(db, "New dynamic", []);
-      expect(previousId).toBeNull();
-      expect(newId).toBeGreaterThan(0);
+      // Create a self node with no associated memories
+      const cacheId = insertMemory(db, "old cache", 0.9);
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [cacheId]);
+
+      const { newCacheId } = recompileIdentityCache(db, "self", "test-agent");
+
+      const newMem = db.query("SELECT content FROM memories WHERE id = ?").get(newCacheId) as any;
+      expect(newMem.content).toBe("I am test-agent.");
 
       db.close();
     });
 
-    test("M5: transfers memory_sources from old to new", () => {
+    test("relationship role minimal content", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      const ev1 = insertRawEvent(db, 1, "user", "text", "early interaction");
-      const ev2 = insertRawEvent(db, 2, "user", "text", "later interaction");
-      evolveRelationship(db, "Rel v1", [ev1]);
-      const { newId } = evolveRelationship(db, "Rel v2", [ev2]);
+      const cacheId = insertMemory(db, "old rel cache", 0.85);
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('relationship', ?)", [cacheId]);
 
-      const sources = db.query(
-        "SELECT raw_event_id FROM memory_sources WHERE memory_id = ? ORDER BY raw_event_id"
-      ).all(newId) as { raw_event_id: number }[];
-      expect(sources.length).toBe(2);
-      expect(sources.map(s => s.raw_event_id)).toEqual([ev1, ev2]);
+      const { newCacheId } = recompileIdentityCache(db, "relationship");
+
+      const newMem = db.query("SELECT content, salience FROM memories WHERE id = ?").get(newCacheId) as any;
+      expect(newMem.content).toBe("Relationship with this human.");
+      expect(newMem.salience).toBe(0.85); // relationship role gets 0.85
 
       db.close();
     });
 
-    test("multiple evolutions: old versions archived, latest is current", () => {
+    test("archive/replace lifecycle: old cache archived, new cache active", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      const { newId: id1 } = evolveRelationship(db, "Rel v1", []);
-      const { newId: id2 } = evolveRelationship(db, "Rel v2", []);
-      const { newId: id3 } = evolveRelationship(db, "Rel v3", []);
+      // First compile
+      const initId = insertMemory(db, "initial cache", 0.9);
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [initId]);
 
-      // Old versions archived (not deleted)
-      const v1 = db.query("SELECT archived_at FROM memories WHERE id = ?").get(id1) as any;
-      expect(v1.archived_at).not.toBeNull();
-      const v2 = db.query("SELECT archived_at FROM memories WHERE id = ?").get(id2) as any;
-      expect(v2.archived_at).not.toBeNull();
+      const { newCacheId: firstCacheId } = recompileIdentityCache(db, "self", "agent-x");
 
-      // Latest is active
-      const v3 = db.query("SELECT archived_at FROM memories WHERE id = ?").get(id3) as any;
-      expect(v3.archived_at).toBeNull();
+      // Add a neighbor then recompile
+      const m1 = insertMemory(db, "I learned something new", 0.75);
+      createAssociation(db, firstCacheId, m1, 0.6);
+
+      const { newCacheId: secondCacheId, previousCacheId } = recompileIdentityCache(db, "self");
+
+      expect(previousCacheId).toBe(firstCacheId);
+
+      // First cache archived
+      const firstMem = db.query("SELECT archived_at FROM memories WHERE id = ?").get(firstCacheId) as any;
+      expect(firstMem.archived_at).not.toBeNull();
+
+      // Second cache active
+      const secondMem = db.query("SELECT archived_at, content FROM memories WHERE id = ?").get(secondCacheId) as any;
+      expect(secondMem.archived_at).toBeNull();
+      expect(secondMem.content).toContain("I learned something new");
 
       // Registry points to latest
-      const reg = db.query("SELECT memory_id FROM identity_nodes WHERE role = 'relationship'").get() as any;
-      expect(reg.memory_id).toBe(id3);
+      const reg = db.query("SELECT memory_id FROM identity_nodes WHERE role = 'self'").get() as any;
+      expect(reg.memory_id).toBe(secondCacheId);
+
+      db.close();
+    });
+
+    test("excludes archived neighbors from compiled content", () => {
+      const { db, path } = tempDb();
+      cleanup.push(path);
+
+      const cacheId = insertMemory(db, "self cache", 0.9);
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [cacheId]);
+
+      const activeNeighbor = insertMemory(db, "I am active content", 0.8);
+      const archivedNeighbor = insertMemory(db, "I am archived content", 0.7);
+      db.run("UPDATE memories SET archived_at = ? WHERE id = ?", [Date.now(), archivedNeighbor]);
+
+      createAssociation(db, cacheId, activeNeighbor, 0.7);
+      createAssociation(db, cacheId, archivedNeighbor, 0.7);
+
+      const { newCacheId } = recompileIdentityCache(db, "self");
+
+      const newMem = db.query("SELECT content FROM memories WHERE id = ?").get(newCacheId) as any;
+      expect(newMem.content).toContain("I am active content");
+      expect(newMem.content).not.toContain("I am archived content");
+
+      db.close();
+    });
+
+    test("fresh creation when no registry entry exists", () => {
+      const { db, path } = tempDb();
+      cleanup.push(path);
+
+      const { newCacheId, previousCacheId } = recompileIdentityCache(db, "self", "fresh-agent");
+
+      expect(previousCacheId).toBeNull();
+
+      const mem = db.query("SELECT content FROM memories WHERE id = ?").get(newCacheId) as any;
+      expect(mem.content).toBe("I am fresh-agent.");
+
+      const reg = db.query("SELECT memory_id FROM identity_nodes WHERE role = 'self'").get() as any;
+      expect(reg.memory_id).toBe(newCacheId);
 
       db.close();
     });
@@ -1158,7 +1185,8 @@ describe("dream-tools", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      const { newId: selfId } = evolveIdentity(db, "Test engineer", []);
+      const selfId = insertMemory(db, "Test engineer", 0.9);
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [selfId]);
       const memId = insertMemory(db, "breakthrough moment", 0.5);
 
       markSignificance(db, memId);
@@ -1242,13 +1270,13 @@ describe("dream-tools", () => {
       cleanup.push(path);
 
       const factId = createMemory(db, "user's dog is Biscuit", 0.7, [], "fact");
-      const affId = createMemory(db, "that was tense", 0.6, [], "affective");
+      const epiId = createMemory(db, "that was tense", 0.6, [], "episodic");
 
       const factMem = db.query("SELECT type FROM memories WHERE id = ?").get(factId) as any;
       expect(factMem.type).toBe("fact");
 
-      const affMem = db.query("SELECT type FROM memories WHERE id = ?").get(affId) as any;
-      expect(affMem.type).toBe("affective");
+      const epiMem = db.query("SELECT type FROM memories WHERE id = ?").get(epiId) as any;
+      expect(epiMem.type).toBe("episodic");
 
       db.close();
     });
@@ -1310,26 +1338,13 @@ describe("dream-tools", () => {
       db.close();
     });
 
-    test("evolveIdentity: old archived with type=identity", () => {
+    test("recompileIdentityCache: old archived with preserved content", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      const { newId: oldId } = evolveIdentity(db, "Self v1", []);
-      evolveIdentity(db, "Self v2", []);
-
-      const old = db.query("SELECT type, archived_at FROM memories WHERE id = ?").get(oldId) as any;
-      expect(old.type).toBe("identity");
-      expect(old.archived_at).not.toBeNull();
-
-      db.close();
-    });
-
-    test("evolveRelationship: old archived with preserved content", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
-
-      const { newId: oldId } = evolveRelationship(db, "Rel v1", []);
-      evolveRelationship(db, "Rel v2", []);
+      const oldId = insertMemory(db, "Rel v1", 0.85);
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('relationship', ?)", [oldId]);
+      recompileIdentityCache(db, "relationship");
 
       const old = db.query("SELECT content, archived_at FROM memories WHERE id = ?").get(oldId) as any;
       expect(old.content).toBe("Rel v1");

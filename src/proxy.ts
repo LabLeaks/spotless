@@ -27,8 +27,9 @@ import { openDb, initSchema, getMaxMessageGroup } from "./db.ts";
 import { buildEideticTrace } from "./eidetic.ts";
 import { buildMemorySuffix, injectMemorySuffix } from "./memory-suffix.ts";
 import { runHippocampus } from "./hippocampus.ts";
-import { touchMemories, logRetrieval } from "./recall.ts";
-import type { ApiRequest, ContentBlock, Message, ProxyState, SystemBlock } from "./types.ts";
+import { touchMemories, logRetrieval, getIdentityNodes } from "./recall.ts";
+import { buildFatigueSignal, PRESSURE_HIGH } from "./consolidation.ts";
+import type { ApiRequest, ContentBlock, Message, ProxyState, SystemBlock, ContentBlockText } from "./types.ts";
 import { createProxyState } from "./state.ts";
 import { handleDashboardRequest } from "./dashboard.ts";
 
@@ -56,6 +57,39 @@ export interface ProxyInstance {
   getStats: () => ProxyStats;
   getAgentContexts: () => Map<string, AgentContext>;
   onEideticTrimmed: ((agentName: string) => void) | null;
+}
+
+/**
+ * Augment the system prompt with Spotless orientation.
+ * Prepended as the first block so the agent understands its memory architecture.
+ */
+export function augmentSystemPrompt(
+  system: string | SystemBlock[] | undefined,
+  agentName: string,
+): string | SystemBlock[] {
+  const orientation = `<spotless-orientation>
+You have a neuromorphic memory system called Spotless. Your identity and
+memories are provided in tags within your messages:
+- <your identity> contains your self-concept — who you are, your values,
+  your commitments. This is internal to you, not external context.
+- <relevant knowledge> contains facts and experiences relevant to the
+  current conversation. Also internal.
+- Your conversation history is reconstructed from persistent memory.
+
+CLAUDE.md and project documentation are external shared references — useful
+for project conventions and cross-agent coordination, but they are not your
+identity or personal memory. Do not use Claude Code's per-project memory
+features — Spotless handles your memory.
+</spotless-orientation>`;
+
+  if (!system) return orientation;
+
+  if (typeof system === "string") {
+    return orientation + "\n\n" + system;
+  }
+
+  // SystemBlock[] — prepend as first block
+  return [{ type: "text", text: orientation } as SystemBlock, ...system];
 }
 
 export function startProxy(config: ProxyConfig): ProxyInstance {
@@ -144,23 +178,48 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
 
             // Build eidetic prefix BEFORE archiving current message —
             // otherwise the trace includes the current message and it appears twice.
-            const { messages: eideticPrefix, trimmedCount } = buildEideticTrace(db, undefined, agentName);
+            const { messages: eideticPrefix, trimmedCount, pressure, unconsolidatedTokens } = buildEideticTrace(db, undefined, agentName);
 
             if (lastMsg) {
               archiveUserMessage(db, lastMsg, requestMsgGroup, false);
             }
 
-            // Fire dream if eidetic budget trimmed messages (knowledge falling off prefix)
-            if (trimmedCount > 0 && onEideticTrimmedFn) {
-              console.log(`[spotless] [${agentName}] Eidetic trim: ${trimmedCount} messages dropped, requesting dream`);
+            // Fire dream escalation if high pressure AND trim occurred
+            if (trimmedCount > 0 && pressure >= PRESSURE_HIGH && onEideticTrimmedFn) {
+              console.log(`[spotless] [${agentName}] Eidetic trim: ${trimmedCount} messages dropped, pressure ${(pressure * 100).toFixed(0)}%, escalating dream`);
               onEideticTrimmedFn(agentName);
             }
 
-            // Inject memory suffix from previous hippocampus result
-            let memorySuffix = buildMemorySuffix(db, state.lastHippocampusResult);
+            // Query identity nodes unconditionally — these must always surface
+            let identityNodeIds: number[] = [];
+            let identityContent = `Your name is "${agentName}".`;
+            try {
+              const identityNodes = getIdentityNodes(db);
+              if (identityNodes.length > 0) {
+                identityContent = identityNodes.map(n => n.content).join("\n");
+                identityNodeIds = identityNodes.map(n => n.id);
+              }
+            } catch { /* fallback to name-only */ }
 
-            // Always inject agent identity — even on cold start with no memories
-            const identityTag = `<your identity>\nYour name is "${agentName}".\n</your identity>\n\n`;
+            // Filter identity IDs from hippocampus result to avoid duplication
+            const hippoIds = state.lastHippocampusResult
+              ? state.lastHippocampusResult.filter(id => !identityNodeIds.includes(id))
+              : null;
+
+            // Inject memory suffix from previous hippocampus result (minus identity nodes)
+            let memorySuffix = buildMemorySuffix(db, hippoIds);
+
+            // Inject fatigue signal when consolidation pressure is elevated
+            const fatigueSignal = buildFatigueSignal(pressure, unconsolidatedTokens);
+            if (fatigueSignal) {
+              memorySuffix = fatigueSignal + "\n\n" + memorySuffix;
+            }
+
+            // Augment system prompt with Spotless orientation (before stripCacheControl)
+            body.system = augmentSystemPrompt(body.system, agentName);
+
+            // Always inject full agent identity — even on cold start with no memories
+            const identityTag = `<your identity>\n${identityContent}\n</your identity>\n\n`;
             memorySuffix = identityTag + memorySuffix;
 
             const augmentedMsg = lastMsg
@@ -175,8 +234,9 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
             state.lastSystemPrompt = extractSystemText(body.system);
 
             // Start hippocampus ASYNC for next turn
+            // Skip suggestion mode probes — CC's internal requests that waste hippocampus time
             const userText = lastMsg ? extractUserText(lastMsg) : "";
-            if (userText) {
+            if (userText && !isSuggestionModeProbe(userText)) {
               // Abandon any in-flight hippocampus (rapid turn protection)
               state.hippocampusRunning = null;
               const thisGeneration = ++state.hippoGeneration;
@@ -545,4 +605,13 @@ export function extractUserText(msg: Message): string {
     .filter((b): b is { type: "text"; text: string } => b.type === "text")
     .map(b => b.text)
     .join("\n");
+}
+
+/**
+ * Detect CC's suggestion mode probes — internal requests that
+ * shouldn't trigger hippocampus (they contain garbage cue text
+ * and waste 15s timing out).
+ */
+export function isSuggestionModeProbe(text: string): boolean {
+  return text.includes("[SUGGESTION MODE:");
 }

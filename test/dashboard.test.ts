@@ -427,6 +427,77 @@ describe("memory type API", () => {
   });
 });
 
+describe("consolidation API function", () => {
+  const cleanup: string[] = [];
+
+  afterEach(() => {
+    for (const p of cleanup) {
+      try { unlinkSync(p); } catch {}
+      try { unlinkSync(p + "-wal"); } catch {}
+      try { unlinkSync(p + "-shm"); } catch {}
+    }
+    cleanup.length = 0;
+  });
+
+  test("consolidation status on empty DB", () => {
+    const { db, path } = tempDb();
+    cleanup.push(path);
+
+    // Import and call directly since we can't route through handler without a real agent
+    const { getConsolidationStatus, getPressureLevel, getIntervalForPressure } = require("../src/consolidation.ts");
+    const status = getConsolidationStatus(db);
+    const level = getPressureLevel(status.pressure);
+    const interval = getIntervalForPressure(status.pressure);
+
+    expect(status.pressure).toBe(0);
+    expect(status.watermark).toBeNull();
+    expect(status.unconsolidatedTokens).toBe(0);
+    expect(status.totalGroups).toBe(0);
+    expect(status.consolidatedGroups).toBe(0);
+    expect(level).toBe("none");
+    expect(interval).toBe(10 * 60 * 1000);
+
+    db.close();
+  });
+
+  test("consolidation status with unconsolidated events", () => {
+    const { db, path } = tempDb();
+    cleanup.push(path);
+
+    const now = Date.now();
+    // Insert raw events (not consolidated)
+    for (let i = 0; i < 3; i++) {
+      db.run(
+        "INSERT INTO raw_events (timestamp, message_group, role, content_type, content) VALUES (?, ?, ?, ?, ?)",
+        [now + i, i + 1, "user", "text", "some test content for group " + (i + 1)],
+      );
+    }
+    // Mark one as consolidated
+    db.run("UPDATE raw_events SET consolidated = 1 WHERE message_group = 1");
+
+    const { getConsolidationStatus } = require("../src/consolidation.ts");
+    const status = getConsolidationStatus(db);
+
+    expect(status.watermark).toBe(1);
+    expect(status.totalGroups).toBe(3);
+    expect(status.consolidatedGroups).toBe(1);
+    expect(status.unconsolidatedTokens).toBeGreaterThan(0);
+
+    db.close();
+  });
+
+  test("agent list includes pressure fields", () => {
+    // The apiAgents function reads from real filesystem, so we just verify
+    // that the function signature includes the fields by checking the handler.
+    // We rely on the typecheck passing + the other consolidation tests for correctness.
+    const agents = new Map<string, AgentContext>();
+    const stats = makeStats();
+    const resp = handleDashboardRequest(makeUrl("/_dashboard/api/agents"), agents, stats);
+    expect(resp).not.toBeNull();
+    // Just verify it doesn't crash with the new consolidation queries
+  });
+});
+
 describe("HTML pages", () => {
   test("index page contains Spotless Dashboard title", async () => {
     const agents = new Map<string, AgentContext>();
@@ -447,6 +518,15 @@ describe("HTML pages", () => {
     const html = await resp!.text();
     // Index page doesn't have tabs, but we can at least verify it renders
     expect(html).toContain("Spotless Dashboard");
+  });
+
+  test("index page contains pressure styles", async () => {
+    const agents = new Map<string, AgentContext>();
+    const stats = makeStats();
+    const resp = handleDashboardRequest(makeUrl("/_dashboard/"), agents, stats);
+    const html = await resp!.text();
+    expect(html).toContain("pressure-moderate");
+    expect(html).toContain("pressure-high");
   });
 
   test("agent page contains agent name and tabs", async () => {

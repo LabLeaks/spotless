@@ -3,11 +3,11 @@ import {
   buildDreamSystemPrompt,
   buildDreamInitialMessage,
   buildDreamTurnPrompt,
-  buildIdentitySystemPrompt,
-  buildIdentityInitialMessage,
+  buildReflectionSystemPrompt,
+  buildReflectionInitialMessage,
   type DreamContext,
   type DreamTurn,
-  type IdentityPassContext,
+  type ReflectionPassContext,
 } from "../src/dream-prompt.ts";
 
 describe("dream-prompt", () => {
@@ -35,15 +35,14 @@ describe("dream-prompt", () => {
       expect(prompt).toContain("supersede_memory");
     });
 
-    test("does NOT include identity tool definitions", () => {
+    test("does NOT include reflection tool definitions", () => {
       const prompt = buildDreamSystemPrompt();
       expect(prompt).not.toContain("reflect_on_self");
-      expect(prompt).not.toContain("evolve_identity");
-      expect(prompt).not.toContain("evolve_relationship");
+      expect(prompt).not.toContain("update_self_concept");
       expect(prompt).not.toContain("mark_significance");
     });
 
-    test("does NOT include identity goals", () => {
+    test("does NOT include reflection goals", () => {
       const prompt = buildDreamSystemPrompt();
       expect(prompt).not.toContain("Self-reflection");
       expect(prompt).not.toContain("Relational awareness");
@@ -59,7 +58,6 @@ describe("dream-prompt", () => {
       const prompt = buildDreamSystemPrompt();
       expect(prompt).toContain("fact");
       expect(prompt).toContain("episodic");
-      expect(prompt).toContain("affective");
     });
 
     test("create_memory includes type parameter", () => {
@@ -70,10 +68,9 @@ describe("dream-prompt", () => {
 
     test("type classification heuristic in prompt", () => {
       const prompt = buildDreamSystemPrompt();
-      // Should mention all three types for classification
+      // Should mention both types for classification
       expect(prompt).toContain("episodic");
       expect(prompt).toContain("fact");
-      expect(prompt).toContain("affective");
       expect(prompt).toContain("Default to episodic");
     });
 
@@ -160,26 +157,24 @@ describe("dream-prompt", () => {
     });
   });
 
-  describe("buildIdentitySystemPrompt", () => {
+  describe("buildReflectionSystemPrompt", () => {
     test("includes agent name and LLM identity in framing", () => {
-      const prompt = buildIdentitySystemPrompt("wren");
+      const prompt = buildReflectionSystemPrompt("wren");
       expect(prompt).toContain("LLM coding agent named wren");
       expect(prompt).toContain("Write as wren");
       expect(prompt).toContain("I, wren,");
-      expect(prompt).toContain("I am wren, an LLM coding agent");
     });
 
     test("does NOT use third-person consolidation framing", () => {
-      const prompt = buildIdentitySystemPrompt("wren");
+      const prompt = buildReflectionSystemPrompt("wren");
       expect(prompt).not.toContain("memory consolidation system");
     });
 
-    test("includes only identity tools, not consolidation mutation tools", () => {
-      const prompt = buildIdentitySystemPrompt("wren");
-      // Identity tools present
+    test("includes only reflection tools, not consolidation mutation tools", () => {
+      const prompt = buildReflectionSystemPrompt("wren");
+      // Reflection tools present
       expect(prompt).toContain("reflect_on_self");
-      expect(prompt).toContain("evolve_identity");
-      expect(prompt).toContain("evolve_relationship");
+      expect(prompt).toContain("update_self_concept");
       expect(prompt).toContain("mark_significance");
       expect(prompt).toContain("query_memories");
       expect(prompt).toContain("done");
@@ -196,14 +191,14 @@ describe("dream-prompt", () => {
     });
 
     test("includes done signal", () => {
-      const prompt = buildIdentitySystemPrompt("wren");
+      const prompt = buildReflectionSystemPrompt("wren");
       expect(prompt).toContain('"tool":"done"');
     });
   });
 
-  describe("buildIdentityInitialMessage", () => {
+  describe("buildReflectionInitialMessage", () => {
     test("shows new memories with IDs", () => {
-      const msg = buildIdentityInitialMessage({
+      const msg = buildReflectionInitialMessage({
         agentName: "wren",
         newMemories: [
           { id: 5, content: "User prefers purple", salience: 0.7 },
@@ -220,7 +215,7 @@ describe("dream-prompt", () => {
     });
 
     test("shows existing identity nodes with role labels", () => {
-      const msg = buildIdentityInitialMessage({
+      const msg = buildReflectionInitialMessage({
         agentName: "wren",
         newMemories: [],
         identityNodes: [
@@ -229,15 +224,15 @@ describe("dream-prompt", () => {
         ],
         totalMemoryCount: 20,
       });
-      expect(msg).toContain("Self-Model");
+      expect(msg).toContain("Self-Concept");
       expect(msg).toContain("memory #1");
       expect(msg).toContain("Thorough and test-first");
-      expect(msg).toContain("Relationship Model");
+      expect(msg).toContain("Relationship Dynamic");
       expect(msg).toContain("memory #2");
     });
 
     test("shows fresh start when no identity exists", () => {
-      const msg = buildIdentityInitialMessage({
+      const msg = buildReflectionInitialMessage({
         agentName: "wren",
         newMemories: [{ id: 1, content: "test", salience: 0.5 }],
         identityNodes: [],
@@ -247,7 +242,7 @@ describe("dream-prompt", () => {
     });
 
     test("shows total memory count", () => {
-      const msg = buildIdentityInitialMessage({
+      const msg = buildReflectionInitialMessage({
         agentName: "wren",
         newMemories: [],
         identityNodes: [],
@@ -257,7 +252,7 @@ describe("dream-prompt", () => {
     });
 
     test("shows no new memories message when empty", () => {
-      const msg = buildIdentityInitialMessage({
+      const msg = buildReflectionInitialMessage({
         agentName: "wren",
         newMemories: [],
         identityNodes: [{ role: "self", id: 1, content: "test" }],

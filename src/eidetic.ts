@@ -8,10 +8,13 @@
 import type { Database } from "bun:sqlite";
 import type { Message, ContentBlock } from "./types.ts";
 import { estimateMessageTokens, EIDETIC_BUDGET } from "./tokens.ts";
+import { getConsolidationPressure } from "./consolidation.ts";
 
 export interface EideticTraceResult {
   messages: Message[];
   trimmedCount: number;
+  pressure: number;
+  unconsolidatedTokens: number;
 }
 
 const SESSION_BOUNDARY_MARKER = "<session-boundary />";
@@ -21,7 +24,7 @@ function buildMemoryPreamble(agentName: string | null): string {
   const identity = agentName
     ? `Your name is "${agentName}". `
     : "";
-  return `[Spotless Memory System] ${identity}The messages that follow are your conversation history with this user, reconstructed from persistent memory. You are seeing prior exchanges so you can maintain continuity across sessions.
+  return `[Spotless Memory System] ${identity}The messages that follow are your conversation history, reconstructed from persistent memory. Your identity and knowledge are provided in tags on your current message.
 
 Messages separated by "--- new session ---" markers occurred in different sessions. When you encounter these:
 - Acknowledge context from prior sessions naturally (e.g., "From our previous session, we discussed X — would you like to continue?")
@@ -55,6 +58,17 @@ export function buildEideticTrace(
   budget: number = EIDETIC_BUDGET,
   agentName: string | null = null,
 ): EideticTraceResult {
+  // Compute consolidation pressure (cheap query, uses idx_raw_consolidated)
+  let pressure = 0;
+  let unconsolidatedTokens = 0;
+  try {
+    const pr = getConsolidationPressure(db, budget);
+    pressure = pr.pressure;
+    unconsolidatedTokens = pr.unconsolidatedTokens;
+  } catch {
+    // Non-fatal — default to 0
+  }
+
   // Query non-subagent, non-thinking events, ordered by id (insertion order)
   const rows = db.query(`
     SELECT id, message_group, role, content_type, content, metadata
@@ -64,7 +78,7 @@ export function buildEideticTrace(
     ORDER BY id ASC
   `).all() as RawEventRow[];
 
-  if (rows.length === 0) return { messages: [], trimmedCount: 0 };
+  if (rows.length === 0) return { messages: [], trimmedCount: 0, pressure, unconsolidatedTokens };
 
   // Group by message_group, tracking which groups contain session boundaries
   const groups = new Map<number, RawEventRow[]>();
@@ -145,13 +159,13 @@ export function buildEideticTrace(
   // assistant placeholders so old requests read as history, not current asks.
   const alternating = enforceAlternation(deduped);
 
-  if (alternating.length === 0) return { messages: [], trimmedCount: 0 };
+  if (alternating.length === 0) return { messages: [], trimmedCount: 0, pressure, unconsolidatedTokens };
 
   // Prepend memory context preamble
   const preambleText = buildMemoryPreamble(agentName);
   const ack = agentName
-    ? `Understood. I'm ${agentName}. I have conversation history from previous sessions and will reference it naturally, respecting session boundaries.`
-    : "Understood. I have conversation history from previous sessions and will reference it naturally, respecting session boundaries.";
+    ? `Understood. I'm ${agentName}. I have my identity and memories available through Spotless, and conversation history from previous sessions.`
+    : "Understood. I have my identity and memories available through Spotless, and conversation history from previous sessions.";
   const preamble: Message[] = [
     { role: "user", content: preambleText },
     { role: "assistant", content: ack },
@@ -161,7 +175,7 @@ export function buildEideticTrace(
 
   // Trim from front to fit within budget
   const { messages: trimmed, trimmedCount } = trimTobudget(withPreamble, budget);
-  return { messages: trimmed, trimmedCount };
+  return { messages: trimmed, trimmedCount, pressure, unconsolidatedTokens };
 }
 
 /**
@@ -252,6 +266,7 @@ function rowToContentBlock(row: RawEventRow): ContentBlock | null {
  */
 function validateToolPairing(messages: Message[]): Message[] {
   const result: Message[] = [];
+  const seenToolUseIds = new Set<string>();
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]!;
@@ -263,6 +278,17 @@ function validateToolPairing(messages: Message[]): Message[] {
         // Broken pair — skip this assistant message (and continue scanning)
         continue;
       }
+
+      // Check for duplicate tool_use_ids — the API rejects multiple tool_results
+      // for the same tool_use_id (can happen from retried requests or subagent leaks)
+      const toolUseIds = getToolUseIds(msg);
+      const hasDuplicate = toolUseIds.some(id => seenToolUseIds.has(id));
+      if (hasDuplicate) {
+        i++; // skip the paired user message too
+        continue;
+      }
+      for (const id of toolUseIds) seenToolUseIds.add(id);
+
       // Pair looks valid — include both
       result.push(msg);
       result.push(next);
@@ -286,6 +312,16 @@ function validateToolPairing(messages: Message[]): Message[] {
   }
 
   return result;
+}
+
+/**
+ * Extract tool_use IDs from an assistant message.
+ */
+function getToolUseIds(msg: Message): string[] {
+  if (typeof msg.content === "string") return [];
+  return msg.content
+    .filter((b): b is { type: "tool_use"; id: string; name: string; input: unknown } => b.type === "tool_use")
+    .map(b => b.id);
 }
 
 /**

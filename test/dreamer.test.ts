@@ -1,12 +1,12 @@
 import { test, expect, describe } from "bun:test";
 import {
   parseToolCall,
-  shouldRunIdentityPass,
+  shouldRunReflectionPass,
   loadNewMemories,
   getTotalMemoryCount,
   executeTool,
   CONSOLIDATION_TOOLS,
-  IDENTITY_TOOLS,
+  REFLECTION_TOOLS,
 } from "../src/dreamer.ts";
 import type { DreamResult } from "../src/types.ts";
 import { openDb, initSchema } from "../src/db.ts";
@@ -99,75 +99,34 @@ describe("dreamer", () => {
       expect(CONSOLIDATION_TOOLS.has("mark_significance")).toBe(false);
     });
 
-    test("IDENTITY_TOOLS does not contain consolidation mutation tools", () => {
-      expect(IDENTITY_TOOLS.has("create_memory")).toBe(false);
-      expect(IDENTITY_TOOLS.has("create_association")).toBe(false);
-      expect(IDENTITY_TOOLS.has("update_memory")).toBe(false);
-      expect(IDENTITY_TOOLS.has("merge_memories")).toBe(false);
-      expect(IDENTITY_TOOLS.has("prune_memory")).toBe(false);
-      expect(IDENTITY_TOOLS.has("supersede_memory")).toBe(false);
-      expect(IDENTITY_TOOLS.has("query_raw_events")).toBe(false);
-      expect(IDENTITY_TOOLS.has("drain_retrieval_log")).toBe(false);
+    test("REFLECTION_TOOLS does not contain consolidation mutation tools", () => {
+      expect(REFLECTION_TOOLS.has("create_memory")).toBe(false);
+      expect(REFLECTION_TOOLS.has("create_association")).toBe(false);
+      expect(REFLECTION_TOOLS.has("update_memory")).toBe(false);
+      expect(REFLECTION_TOOLS.has("merge_memories")).toBe(false);
+      expect(REFLECTION_TOOLS.has("prune_memory")).toBe(false);
+      expect(REFLECTION_TOOLS.has("supersede_memory")).toBe(false);
+      expect(REFLECTION_TOOLS.has("query_raw_events")).toBe(false);
+      expect(REFLECTION_TOOLS.has("drain_retrieval_log")).toBe(false);
     });
 
-    test("IDENTITY_TOOLS contains query_memories for read-only context", () => {
-      expect(IDENTITY_TOOLS.has("query_memories")).toBe(true);
+    test("REFLECTION_TOOLS contains query_memories for read-only context", () => {
+      expect(REFLECTION_TOOLS.has("query_memories")).toBe(true);
     });
 
     test("both sets contain done", () => {
       expect(CONSOLIDATION_TOOLS.has("done")).toBe(true);
-      expect(IDENTITY_TOOLS.has("done")).toBe(true);
+      expect(REFLECTION_TOOLS.has("done")).toBe(true);
     });
   });
 
-  describe("shouldRunIdentityPass", () => {
+  describe("shouldRunReflectionPass", () => {
     test("returns true when new memories were created", () => {
-      const db = createTestDb();
-      try {
-        // Even with complete identity nodes, new memories trigger identity pass
-        db.run("INSERT INTO identity_nodes (role, memory_id) VALUES ('self', NULL)");
-        db.run("INSERT INTO identity_nodes (role, memory_id) VALUES ('relationship', NULL)");
-        expect(shouldRunIdentityPass(db, [1, 2, 3])).toBe(true);
-      } finally {
-        db.close();
-      }
+      expect(shouldRunReflectionPass([1, 2, 3])).toBe(true);
     });
 
-    test("returns true when self-model is missing", () => {
-      const db = createTestDb();
-      try {
-        // relationship exists, self missing
-        const memId = createMemory(db, "relationship model", 0.85, []);
-        db.run("INSERT INTO identity_nodes (role, memory_id) VALUES ('relationship', ?)", [memId]);
-        expect(shouldRunIdentityPass(db, [])).toBe(true);
-      } finally {
-        db.close();
-      }
-    });
-
-    test("returns true when relationship model is missing", () => {
-      const db = createTestDb();
-      try {
-        // self exists, relationship missing
-        const memId = createMemory(db, "self model", 0.9, []);
-        db.run("INSERT INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [memId]);
-        expect(shouldRunIdentityPass(db, [])).toBe(true);
-      } finally {
-        db.close();
-      }
-    });
-
-    test("returns false when no new memories and identity is complete", () => {
-      const db = createTestDb();
-      try {
-        const selfId = createMemory(db, "self model", 0.9, []);
-        const relId = createMemory(db, "relationship model", 0.85, []);
-        db.run("INSERT INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [selfId]);
-        db.run("INSERT INTO identity_nodes (role, memory_id) VALUES ('relationship', ?)", [relId]);
-        expect(shouldRunIdentityPass(db, [])).toBe(false);
-      } finally {
-        db.close();
-      }
+    test("returns false when no new memories", () => {
+      expect(shouldRunReflectionPass([])).toBe(false);
     });
   });
 
@@ -216,8 +175,8 @@ describe("dreamer", () => {
       return {
         operationsRequested: 0, operationsExecuted: 0,
         memoriesCreated: 0, memoriesMerged: 0, memoriesPruned: 0,
-        memoriesSuperseded: 0, associationsCreated: 0, identityOps: 0,
-        errors: [], durationMs: 0,
+        memoriesSuperseded: 0, associationsCreated: 0, reflectionOps: 0,
+        errors: [], durationMs: 0, groupsConsolidated: 0, pressure: 0,
       };
     }
 
@@ -266,17 +225,14 @@ describe("dreamer", () => {
       }
     });
 
-    test("affective type passes through", () => {
+    test("affective type is rejected", () => {
       const db = createTestDb();
       try {
         const result = freshResult();
         const newMemoryIds: number[] = [];
-        const output = executeTool(db, { tool: "create_memory", input: {
+        expect(() => executeTool(db, { tool: "create_memory", input: {
           content: "that was tense", salience: 0.8, type: "affective", source_event_ids: [],
-        }}, newMemoryIds, result) as { created_id: number };
-
-        const mem = db.query("SELECT type FROM memories WHERE id = ?").get(output.created_id) as any;
-        expect(mem.type).toBe("affective");
+        }}, newMemoryIds, result)).toThrow("Invalid memory type");
       } finally {
         db.close();
       }

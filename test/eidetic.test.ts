@@ -279,4 +279,50 @@ describe("eidetic trace: trimmedCount", () => {
 
     db.close();
   });
+
+  test("duplicate tool_use_id pairs are deduplicated", () => {
+    const { db, path } = tempDb();
+    cleanup.push(path);
+
+    const toolId = "toolu_duplicate_test";
+
+    // Group 1: user asks something
+    insertEvent(db, 1, "user", "text", "read the file");
+
+    // Group 2: assistant calls a tool
+    insertEvent(db, 2, "assistant", "tool_use", '{"path": "foo.txt"}', 0, { tool_id: toolId, tool_name: "Read" });
+
+    // Group 3: user provides tool_result
+    insertEvent(db, 3, "user", "tool_result", "file contents here", 0, { tool_use_id: toolId });
+
+    // Group 4: assistant responds
+    insertEvent(db, 4, "assistant", "text", "I see the file");
+
+    // Groups 5-6: DUPLICATE — same tool_use_id archived again (from retried request)
+    insertEvent(db, 5, "assistant", "tool_use", '{"path": "foo.txt"}', 0, { tool_id: toolId, tool_name: "Read" });
+    insertEvent(db, 6, "user", "tool_result", "file contents here", 0, { tool_use_id: toolId });
+
+    // Group 7: assistant responds again
+    insertEvent(db, 7, "assistant", "text", "still the same file");
+
+    const { messages: trace } = buildEideticTrace(db, 100_000);
+
+    // Count tool_result blocks — should be exactly 1 (duplicate pair skipped)
+    let toolResultCount = 0;
+    for (const msg of trace) {
+      if (typeof msg.content !== "string") {
+        toolResultCount += msg.content.filter(b => b.type === "tool_result").length;
+      }
+    }
+    expect(toolResultCount).toBe(1);
+
+    // The text content from both assistants should still be present
+    const textContent = trace
+      .filter(m => typeof m.content === "string")
+      .map(m => m.content as string)
+      .join(" ");
+    expect(textContent).toContain("I see the file");
+
+    db.close();
+  });
 });

@@ -43,11 +43,11 @@ If nothing is relevant, output: {"memory_ids": []}`);
   // Working self: identity nodes shape HOW the agent responds
   const identityIds = new Set(ctx.identityNodes.map(n => n.id));
   if (ctx.identityNodes.length > 0) {
-    const roleLabels: Record<string, string> = { self: "Self", relationship: "Relationship" };
+    const roleLabels: Record<string, string> = { self: "Self-Concept", relationship: "Relationship" };
     const lines = ctx.identityNodes.map(node =>
       `[${roleLabels[node.role] ?? node.role}, id:${node.id}] ${node.content}`
     );
-    sections.push(`## WHO YOU ARE (always include — this is your identity)\n${lines.join("\n")}`);
+    sections.push(`## WHO YOU ARE (always include — this is your self-concept)\n${lines.join("\n")}`);
   }
 
   // Exclude identity nodes from candidates to avoid duplication (M2)

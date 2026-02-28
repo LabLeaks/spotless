@@ -93,7 +93,7 @@ export function queryMemories(
 
 interface QueryRawEventsOpts {
   limit?: number;               // max message_groups (not rows)
-  unconsolidatedOnly?: boolean;  // exclude events linked via memory_sources
+  unconsolidatedOnly?: boolean;  // exclude events where consolidated = 1
   newestFirst?: boolean;         // DESC ordering (for hippocampus recent context)
 }
 
@@ -112,7 +112,7 @@ interface RawEventGroup {
  * Query raw events grouped by message_group.
  * Excludes thinking blocks and subagent content.
  * `limit` applies to message_groups, not individual rows.
- * `unconsolidatedOnly` excludes events that already have memory_sources links.
+ * `unconsolidatedOnly` excludes events where consolidated = 1.
  */
 export function queryRawEvents(
   db: Database,
@@ -128,10 +128,10 @@ export function queryRawEvents(
       SELECT DISTINCT r.message_group
       FROM raw_events r
       WHERE r.is_subagent = 0
+        AND r.consolidated = 0
         AND r.content_type != 'thinking'
         AND r.content != '<session-boundary />'
         AND r.content NOT LIKE '<system-reminder>%'
-        AND r.id NOT IN (SELECT raw_event_id FROM memory_sources)
       ORDER BY r.message_group ${sortDir}
       LIMIT ?
     `;
@@ -489,32 +489,21 @@ export function supersedeMemory(
   })();
 }
 
-// --- Identity node evolution ---
-
-interface EvolveNodeOpts {
-  newSalience: number;
-}
+// --- Identity node helpers ---
 
 /**
- * Shared helper for evolving identity nodes (core, self, relationship).
- *
- * 1. Look up current node from identity_nodes registry
- * 2. If exists: create new, demote old, transfer associations + sources, link
- * 3. If not: create fresh
- * 4. Upsert registry
- *
- * All evolution functions share this pattern — they differ only in
- * role name, salience values, and link strength.
+ * Shared helper: archive an old identity cache memory, create new one,
+ * transfer associations + sources, update registry.
+ * Used by recompileIdentityCache and updateSelfConcept.
  */
-function evolveNode(
+function replaceIdentityCache(
   db: Database,
   role: string,
   newContent: string,
+  newSalience: number,
   sourceEventIds: number[],
-  opts: EvolveNodeOpts,
 ): { newId: number; previousId: number | null } {
   return db.transaction(() => {
-    // Look up current node from registry
     const registry = db.query(
       "SELECT memory_id FROM identity_nodes WHERE role = ? AND memory_id IS NOT NULL"
     ).get(role) as { memory_id: number } | null;
@@ -525,8 +514,7 @@ function evolveNode(
     }
 
     if (current) {
-      // Evolve existing node
-      const newId = createMemory(db, newContent, opts.newSalience, sourceEventIds, "identity");
+      const newId = createMemory(db, newContent, newSalience, sourceEventIds);
 
       // Transfer associations old → new
       const assocs = getAssociations(db, current.id);
@@ -543,18 +531,18 @@ function evolveNode(
         stmt.run(newId, s.raw_event_id);
       }
 
-      // Archive old: preserved for provenance, excluded from FTS5 by trigger.
+      // Archive old
       const now = Date.now();
       db.run("UPDATE memories SET archived_at = ? WHERE id = ?", [now, current.id]);
 
-      // Upsert registry
+      // Update registry
       db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES (?, ?)", [role, newId]);
 
       return { newId, previousId: current.id };
     }
 
     // No existing node — create fresh
-    const newId = createMemory(db, newContent, opts.newSalience, sourceEventIds, "identity");
+    const newId = createMemory(db, newContent, newSalience, sourceEventIds);
     db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES (?, ?)", [role, newId]);
     return { newId, previousId: null };
   })();
@@ -577,47 +565,22 @@ function getRegistryNode(db: Database, role: string): Memory | null {
 
 /**
  * Self-referential encoding: create a memory with richer connectivity.
- * Links to self-model node if it exists (identity-adjacent).
+ * Links to the specified identity anchor node if it exists.
  */
 export function reflectOnSelf(
   db: Database,
   insight: string,
   sourceEventIds: number[],
+  anchor: "self" | "relationship" = "self",
 ): { newId: number } {
   const newId = createMemory(db, insight, 0.85, sourceEventIds);
 
-  const selfNode = getRegistryNode(db, "self");
-  if (selfNode) {
-    createAssociation(db, newId, selfNode.id, 0.8);
+  const anchorNode = getRegistryNode(db, anchor);
+  if (anchorNode) {
+    createAssociation(db, newId, anchorNode.id, 0.8);
   }
 
   return { newId };
-}
-
-/**
- * Evolve the self-model node. Salience 0.9 / 0.2 (fades naturally).
- */
-export function evolveIdentity(
-  db: Database,
-  newSelfModel: string,
-  sourceEventIds: number[],
-): { newId: number; previousId: number | null } {
-  return evolveNode(db, "self", newSelfModel, sourceEventIds, {
-    newSalience: 0.9,
-  });
-}
-
-/**
- * Evolve the relationship-model node. Salience 0.85 / 0.2 (fades naturally).
- */
-export function evolveRelationship(
-  db: Database,
-  newDynamic: string,
-  sourceEventIds: number[],
-): { newId: number; previousId: number | null } {
-  return evolveNode(db, "relationship", newDynamic, sourceEventIds, {
-    newSalience: 0.85,
-  });
 }
 
 /**
@@ -638,6 +601,103 @@ export function markSignificance(
   if (selfNode) {
     createAssociation(db, memoryId, selfNode.id, 0.6);
   }
+}
+
+/**
+ * Create or supersede a self-concept fact, associated to an identity anchor.
+ *
+ * If supersedesId is provided, delegates to supersedeMemory (archives old, creates fact).
+ * Otherwise creates a new fact memory.
+ * Auto-associates to the specified identity anchor at strength 0.8.
+ */
+export function updateSelfConcept(
+  db: Database,
+  content: string,
+  salience: number,
+  anchor: "self" | "relationship",
+  sourceEventIds: number[],
+  supersedesId?: number,
+): { newId: number; archivedId?: number } {
+  let newId: number;
+  let archivedId: number | undefined;
+
+  if (supersedesId !== undefined) {
+    const result = supersedeMemory(db, supersedesId, content, salience, sourceEventIds);
+    newId = result.newId;
+    archivedId = result.oldId;
+  } else {
+    newId = createMemory(db, content, salience, sourceEventIds, "fact");
+  }
+
+  // Associate to identity anchor
+  const anchorNode = getRegistryNode(db, anchor);
+  if (anchorNode) {
+    createAssociation(db, newId, anchorNode.id, 0.8);
+  }
+
+  return { newId, archivedId };
+}
+
+/**
+ * Recompile the identity cache for a given role from its graph neighborhood.
+ *
+ * Reads all non-archived memories associated to the identity anchor at strength >= 0.5,
+ * assembles compiled text sorted by salience DESC, then replaces the identity_node's
+ * cached memory using replaceIdentityCache.
+ */
+export function recompileIdentityCache(
+  db: Database,
+  role: "self" | "relationship",
+  agentName?: string,
+): { newCacheId: number; previousCacheId: number | null } {
+  const registry = db.query(
+    "SELECT memory_id FROM identity_nodes WHERE role = ? AND memory_id IS NOT NULL"
+  ).get(role) as { memory_id: number } | null;
+
+  let compiledContent: string;
+
+  if (registry) {
+    // Get all associations at strength >= 0.5
+    const assocs = db.query(`
+      SELECT CASE
+        WHEN source_id = ? THEN target_id
+        ELSE source_id
+      END AS connected_id, strength
+      FROM associations
+      WHERE (source_id = ? OR target_id = ?) AND strength >= 0.5
+    `).all(registry.memory_id, registry.memory_id, registry.memory_id) as { connected_id: number; strength: number }[];
+
+    if (assocs.length > 0) {
+      const connectedIds = assocs.map(a => a.connected_id);
+      const placeholders = connectedIds.map(() => "?").join(",");
+      const memories = db.query(`
+        SELECT content, salience FROM memories
+        WHERE id IN (${placeholders}) AND archived_at IS NULL
+        ORDER BY salience DESC
+      `).all(...connectedIds) as { content: string; salience: number }[];
+
+      if (memories.length > 0) {
+        compiledContent = memories.map(m => m.content).join("\n");
+      } else {
+        compiledContent = role === "self"
+          ? `I am ${agentName ?? "an AI assistant"}.`
+          : "Relationship with this human.";
+      }
+    } else {
+      compiledContent = role === "self"
+        ? `I am ${agentName ?? "an AI assistant"}.`
+        : "Relationship with this human.";
+    }
+  } else {
+    compiledContent = role === "self"
+      ? `I am ${agentName ?? "an AI assistant"}.`
+      : "Relationship with this human.";
+  }
+
+  const cacheSalience = role === "self" ? 0.9 : 0.85;
+  const { newId, previousId } = replaceIdentityCache(db, role, compiledContent, cacheSalience, []);
+
+  return { newCacheId: newId, previousCacheId: previousId };
 }
 
 /**
