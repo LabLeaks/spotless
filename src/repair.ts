@@ -1,7 +1,7 @@
 /**
  * Database repair and diagnostics for agent databases.
  *
- * Diagnoses corruption in the eidetic archive (Tier 1) and offers
+ * Diagnoses corruption in the history archive (Tier 1) and offers
  * targeted or nuclear repair options. Tier 2 (memories, associations,
  * identity) is always preserved.
  */
@@ -26,8 +26,8 @@ export interface DiagnosticReport {
     memories: number;
     associations: number;
     identityNodes: number;
-    dreamPasses: number;
-    hippocampusRuns: number;
+    digestPasses: number;
+    selectorRuns: number;
   };
   issues: string[];
 }
@@ -144,11 +144,11 @@ export function diagnose(agentName: string): DiagnosticReport {
   const associations = (db.query("SELECT COUNT(*) as c FROM associations").get() as { c: number }).c;
   const identityNodes = (db.query("SELECT COUNT(*) as c FROM identity_nodes WHERE memory_id IS NOT NULL").get() as { c: number }).c;
 
-  let dreamPasses = 0;
-  let hippocampusRuns = 0;
+  let digestPasses = 0;
+  let selectorRuns = 0;
   try {
-    dreamPasses = (db.query("SELECT COUNT(*) as c FROM dream_passes").get() as { c: number }).c;
-    hippocampusRuns = (db.query("SELECT COUNT(*) as c FROM hippocampus_runs").get() as { c: number }).c;
+    digestPasses = (db.query("SELECT COUNT(*) as c FROM digest_passes").get() as { c: number }).c;
+    selectorRuns = (db.query("SELECT COUNT(*) as c FROM selector_runs").get() as { c: number }).c;
   } catch { /* tables may not exist in old DBs */ }
 
   // SQLite integrity check
@@ -174,24 +174,24 @@ export function diagnose(agentName: string): DiagnosticReport {
       memories,
       associations,
       identityNodes,
-      dreamPasses,
-      hippocampusRuns,
+      digestPasses,
+      selectorRuns,
     },
     issues,
   };
 }
 
 /**
- * Purge the eidetic archive (Tier 1) while preserving Tier 2.
+ * Purge the history archive (Tier 1) while preserving Tier 2.
  *
  * Deletes: raw_events, raw_events_fts content, retrieval_log
- * Preserves: memories, associations, identity_nodes, dream_passes, hippocampus_runs
+ * Preserves: memories, associations, identity_nodes, digest_passes, selector_runs
  *
  * Also breaks memory_sources links (they reference raw_events) — this means
- * dreaming can't trace memories back to source events, but the memories
+ * digesting can't trace memories back to source events, but the memories
  * themselves are fine.
  */
-export function purgeEidetic(agentName: string): { eventsDeleted: number } {
+export function purgeHistory(agentName: string): { eventsDeleted: number } {
   if (!validateAgentName(agentName)) {
     throw new Error(`Invalid agent name: "${agentName}"`);
   }
@@ -236,10 +236,10 @@ export function purgeEidetic(agentName: string): { eventsDeleted: number } {
  *
  * Specifically:
  * 1. Delete session boundaries that fall between a tool_use and its matching tool_result
- *    (these are from subagent sessions and corrupt the eidetic trace)
+ *    (these are from subagent sessions and corrupt the history trace)
  * 2. Delete dead retry sessions (user messages followed by session boundary, no assistant response)
  */
-export function repairEidetic(agentName: string): {
+export function repairHistory(agentName: string): {
   boundariesRemoved: number;
   deadSessionsRemoved: number;
 } {

@@ -1,16 +1,16 @@
 /**
- * Eidetic trace builder.
+ * History trace builder.
  *
  * Queries Tier 1 (raw_events) and reconstructs recent conversation
- * as a messages array — the "eidetic prefix" in the layered message format.
+ * as a messages array — the "history prefix" in the layered message format.
  */
 
 import type { Database } from "bun:sqlite";
 import type { Message, ContentBlock } from "./types.ts";
-import { estimateMessageTokens, EIDETIC_BUDGET } from "./tokens.ts";
+import { estimateMessageTokens, HISTORY_BUDGET } from "./tokens.ts";
 import { getConsolidationPressure } from "./consolidation.ts";
 
-export interface EideticTraceResult {
+export interface HistoryResult {
   messages: Message[];
   trimmedCount: number;
   pressure: number;
@@ -42,7 +42,7 @@ interface RawEventRow {
 }
 
 /**
- * Build the eidetic prefix from Tier 1.
+ * Build the history prefix from Tier 1.
  *
  * Queries recent non-subagent raw_events, groups by message_group,
  * reconstructs as Message[] with proper content blocks.
@@ -53,11 +53,11 @@ interface RawEventRow {
  * session-specific injections, not conversation content.
  * Session boundaries are converted to visible "--- new session ---" dividers.
  */
-export function buildEideticTrace(
+export function buildHistory(
   db: Database,
-  budget: number = EIDETIC_BUDGET,
+  budget: number = HISTORY_BUDGET,
   agentName: string | null = null,
-): EideticTraceResult {
+): HistoryResult {
   // Compute consolidation pressure (cheap query, uses idx_raw_consolidated)
   let pressure = 0;
   let unconsolidatedTokens = 0;
@@ -421,6 +421,14 @@ function trimTobudget(messages: Message[], budget: number): { messages: Message[
   // Trim from front until under budget
   let start = 0;
   while (total > budget && start < messages.length - 1) {
+    total -= estimateMessageTokens(messages[start]!);
+    start++;
+  }
+
+  // After trimming, the first remaining message might be an orphaned tool_result
+  // (its preceding assistant tool_use was trimmed). Skip past any such orphans.
+  while (start < messages.length - 1 && hasToolResult(messages[start]!) &&
+         messages[start]!.role === "user") {
     total -= estimateMessageTokens(messages[start]!);
     start++;
   }

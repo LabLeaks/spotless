@@ -1,7 +1,7 @@
 /**
- * Dream tool functions — pure SQLite operations for the dreaming orchestrator.
+ * Digest tool functions — pure SQLite operations for the digest orchestrator.
  *
- * 16 functions that read/write Tier 2 (memories, associations, identity_nodes)
+ * 15 functions that read/write Tier 2 (memories, associations, identity_nodes)
  * and query Tier 1 (raw_events) for consolidation. No LLM calls.
  */
 
@@ -94,7 +94,7 @@ export function queryMemories(
 interface QueryRawEventsOpts {
   limit?: number;               // max message_groups (not rows)
   unconsolidatedOnly?: boolean;  // exclude events where consolidated = 1
-  newestFirst?: boolean;         // DESC ordering (for hippocampus recent context)
+  newestFirst?: boolean;         // DESC ordering (for selector recent context)
 }
 
 interface RawEventGroup {
@@ -410,40 +410,6 @@ export function countHumanTurnsBetween(
 }
 
 /**
- * Prune a memory only if ALL THREE conditions are met:
- * 1. Low salience (< 0.3)
- * 2. Zero access count
- * 3. No associations or all associations weak (strength < 0.2)
- *
- * Returns true if pruned, false if conditions not met.
- */
-export function pruneMemory(db: Database, id: number): boolean {
-  const mem = db.query("SELECT salience, access_count FROM memories WHERE id = ?").get(id) as
-    | { salience: number; access_count: number }
-    | null;
-
-  if (!mem) return false;
-
-  // Condition 1: low salience
-  if (mem.salience >= 0.3) return false;
-
-  // Condition 2: zero access
-  if (mem.access_count > 0) return false;
-
-  // Condition 3: no associations or all weak
-  const strongAssoc = db.query(`
-    SELECT COUNT(*) as count FROM associations
-    WHERE (source_id = ? OR target_id = ?) AND strength >= 0.2
-  `).get(id, id) as { count: number };
-
-  if (strongAssoc.count > 0) return false;
-
-  // All conditions met — prune
-  db.run("DELETE FROM memories WHERE id = ?", [id]);
-  return true;
-}
-
-/**
  * Supersede a wrong memory with corrected content.
  *
  * The "I was wrong" operation:
@@ -492,63 +458,6 @@ export function supersedeMemory(
 // --- Identity node helpers ---
 
 /**
- * Shared helper: archive an old identity cache memory, create new one,
- * transfer associations + sources, update registry.
- * Used by recompileIdentityCache and updateSelfConcept.
- */
-function replaceIdentityCache(
-  db: Database,
-  role: string,
-  newContent: string,
-  newSalience: number,
-  sourceEventIds: number[],
-): { newId: number; previousId: number | null } {
-  return db.transaction(() => {
-    const registry = db.query(
-      "SELECT memory_id FROM identity_nodes WHERE role = ? AND memory_id IS NOT NULL"
-    ).get(role) as { memory_id: number } | null;
-
-    let current: Memory | null = null;
-    if (registry) {
-      current = db.query("SELECT * FROM memories WHERE id = ?").get(registry.memory_id) as Memory | null;
-    }
-
-    if (current) {
-      const newId = createMemory(db, newContent, newSalience, sourceEventIds);
-
-      // Transfer associations old → new
-      const assocs = getAssociations(db, current.id);
-      for (const a of assocs) {
-        createAssociation(db, newId, a.connected_id, a.strength);
-      }
-
-      // Transfer memory_sources old → new
-      const oldSources = db.query(
-        "SELECT raw_event_id FROM memory_sources WHERE memory_id = ?"
-      ).all(current.id) as { raw_event_id: number }[];
-      const stmt = db.prepare("INSERT OR IGNORE INTO memory_sources (memory_id, raw_event_id) VALUES (?, ?)");
-      for (const s of oldSources) {
-        stmt.run(newId, s.raw_event_id);
-      }
-
-      // Archive old
-      const now = Date.now();
-      db.run("UPDATE memories SET archived_at = ? WHERE id = ?", [now, current.id]);
-
-      // Update registry
-      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES (?, ?)", [role, newId]);
-
-      return { newId, previousId: current.id };
-    }
-
-    // No existing node — create fresh
-    const newId = createMemory(db, newContent, newSalience, sourceEventIds);
-    db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES (?, ?)", [role, newId]);
-    return { newId, previousId: null };
-  })();
-}
-
-/**
  * Look up the current identity node for a role.
  * Returns null if no registry entry or memory deleted.
  */
@@ -564,27 +473,7 @@ function getRegistryNode(db: Database, role: string): Memory | null {
 // --- Identity tools ---
 
 /**
- * Self-referential encoding: create a memory with richer connectivity.
- * Links to the specified identity anchor node if it exists.
- */
-export function reflectOnSelf(
-  db: Database,
-  insight: string,
-  sourceEventIds: number[],
-  anchor: "self" | "relationship" = "self",
-): { newId: number } {
-  const newId = createMemory(db, insight, 0.85, sourceEventIds);
-
-  const anchorNode = getRegistryNode(db, anchor);
-  if (anchorNode) {
-    createAssociation(db, newId, anchorNode.id, 0.8);
-  }
-
-  return { newId };
-}
-
-/**
- * Somatic marker: boost a memory's retrieval properties.
+ * Significance boost: boost a memory's retrieval properties.
  * Salience +0.15 (capped at 0.95), associate to self-model if it exists.
  */
 export function markSignificance(
@@ -638,72 +527,60 @@ export function updateSelfConcept(
   return { newId, archivedId };
 }
 
+// --- Identity fact queries ---
+
+export interface IdentityFact {
+  id: number;
+  content: string;
+  salience: number;
+  created_at: number;
+}
+
 /**
- * Recompile the identity cache for a given role from its graph neighborhood.
+ * Get individual identity facts associated to an identity anchor.
  *
- * Reads all non-archived memories associated to the identity anchor at strength >= 0.5,
- * assembles compiled text sorted by salience DESC, then replaces the identity_node's
- * cached memory using replaceIdentityCache.
+ * Reads the anchor's memory_id from identity_nodes, finds all associations
+ * at strength >= 0.5, fetches the non-archived connected memories, and
+ * returns them ordered by created_at DESC (newest = most current state).
+ *
+ * This is the gathering step from the old recompileIdentityCache without
+ * the concatenation step — identity stays granular.
  */
-export function recompileIdentityCache(
+export function getIdentityFacts(
   db: Database,
   role: "self" | "relationship",
-  agentName?: string,
-): { newCacheId: number; previousCacheId: number | null } {
+): IdentityFact[] {
   const registry = db.query(
     "SELECT memory_id FROM identity_nodes WHERE role = ? AND memory_id IS NOT NULL"
   ).get(role) as { memory_id: number } | null;
 
-  let compiledContent: string;
+  if (!registry) return [];
 
-  if (registry) {
-    // Get all associations at strength >= 0.5
-    const assocs = db.query(`
-      SELECT CASE
-        WHEN source_id = ? THEN target_id
-        ELSE source_id
-      END AS connected_id, strength
-      FROM associations
-      WHERE (source_id = ? OR target_id = ?) AND strength >= 0.5
-    `).all(registry.memory_id, registry.memory_id, registry.memory_id) as { connected_id: number; strength: number }[];
+  const assocs = db.query(`
+    SELECT CASE
+      WHEN source_id = ? THEN target_id
+      ELSE source_id
+    END AS connected_id
+    FROM associations
+    WHERE (source_id = ? OR target_id = ?) AND strength >= 0.5
+  `).all(registry.memory_id, registry.memory_id, registry.memory_id) as { connected_id: number }[];
 
-    if (assocs.length > 0) {
-      const connectedIds = assocs.map(a => a.connected_id);
-      const placeholders = connectedIds.map(() => "?").join(",");
-      const memories = db.query(`
-        SELECT content, salience FROM memories
-        WHERE id IN (${placeholders}) AND archived_at IS NULL
-        ORDER BY salience DESC
-      `).all(...connectedIds) as { content: string; salience: number }[];
+  if (assocs.length === 0) return [];
 
-      if (memories.length > 0) {
-        compiledContent = memories.map(m => m.content).join("\n");
-      } else {
-        compiledContent = role === "self"
-          ? `I am ${agentName ?? "an AI assistant"}.`
-          : "Relationship with this human.";
-      }
-    } else {
-      compiledContent = role === "self"
-        ? `I am ${agentName ?? "an AI assistant"}.`
-        : "Relationship with this human.";
-    }
-  } else {
-    compiledContent = role === "self"
-      ? `I am ${agentName ?? "an AI assistant"}.`
-      : "Relationship with this human.";
-  }
+  const connectedIds = assocs.map(a => a.connected_id);
+  const placeholders = connectedIds.map(() => "?").join(",");
 
-  const cacheSalience = role === "self" ? 0.9 : 0.85;
-  const { newId, previousId } = replaceIdentityCache(db, role, compiledContent, cacheSalience, []);
-
-  return { newCacheId: newId, previousCacheId: previousId };
+  return db.query(`
+    SELECT id, content, salience, created_at FROM memories
+    WHERE id IN (${placeholders}) AND archived_at IS NULL
+    ORDER BY created_at DESC
+  `).all(...connectedIds) as IdentityFact[];
 }
 
 /**
  * Remove consolidated raw events from raw_events_fts.
- * After dreaming processes events into memories, remove the FTS5 entries
- * so only unconsolidated events remain searchable (by future dreaming passes).
+ * After digesting processes events into memories, remove the FTS5 entries
+ * so only unconsolidated events remain searchable (by future digest passes).
  * The raw_events rows themselves are preserved.
  *
  * Returns count of FTS5 entries cleaned.

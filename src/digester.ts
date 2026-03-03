@@ -1,11 +1,11 @@
 /**
- * Dreaming orchestrator.
+ * Digest orchestrator.
  *
- * Two-phase dream pass:
- *   Phase 1 (Consolidation): catalogs facts, merges, prunes, strengthens associations
+ * Two-phase digest pass:
+ *   Phase 1 (Consolidation): catalogs facts, merges, strengthens associations
  *   Phase 2 (Identity): first-person self-reflection, identity/relationship evolution
  *
- * Both phases share newMemoryIds and DreamResult counters within a single runDreamPass().
+ * Both phases share newMemoryIds and DigestResult counters within a single runDigestPass().
  *
  * Never throws. Logs errors and returns result with error list.
  */
@@ -13,15 +13,15 @@
 import { getAgentDbPath } from "./agent.ts";
 import { openDb, initSchema } from "./db.ts";
 import {
-  buildDreamSystemPrompt,
-  buildDreamInitialMessage,
-  buildDreamTurnPrompt,
+  buildDigestSystemPrompt,
+  buildDigestInitialMessage,
+  buildDigestTurnPrompt,
   buildReflectionSystemPrompt,
   buildReflectionInitialMessage,
-  type DreamContext,
-  type DreamTurn,
+  type DigestContext,
+  type DigestTurn,
   type ReflectionPassContext,
-} from "./dream-prompt.ts";
+} from "./digest-prompt.ts";
 import {
   queryMemories,
   queryRawEvents,
@@ -31,21 +31,18 @@ import {
   updateMemory,
   mergeMemories,
   countHumanTurnsBetween,
-  pruneMemory,
   drainRetrievalLog,
   supersedeMemory,
-  reflectOnSelf,
   updateSelfConcept,
-  recompileIdentityCache,
   markSignificance,
   cleanupConsolidatedFromFts,
-} from "./dream-tools.ts";
+} from "./digest-tools.ts";
 import { getIdentityNodes } from "./recall.ts";
 import { getConsolidationPressure } from "./consolidation.ts";
-import type { DreamResult, MemoryType } from "./types.ts";
+import type { DigestResult, MemoryType } from "./types.ts";
 import type { Database } from "bun:sqlite";
 
-export interface DreamPassConfig {
+export interface DigestPassConfig {
   agentName: string;
   model?: string;        // default: "haiku"
   maxRawEvents?: number; // max message groups to process
@@ -63,14 +60,14 @@ interface ToolCall {
 export const CONSOLIDATION_TOOLS = new Set([
   "query_memories", "query_raw_events", "get_associations",
   "create_memory", "create_association", "update_memory",
-  "merge_memories", "count_human_turns_between", "prune_memory",
+  "merge_memories", "count_human_turns_between",
   "drain_retrieval_log", "supersede_memory",
   "done",
 ]);
 
 export const REFLECTION_TOOLS = new Set([
   "query_memories",
-  "reflect_on_self", "update_self_concept",
+  "update_self_concept",
   "mark_significance",
   "done",
 ]);
@@ -88,16 +85,16 @@ interface ToolLoopConfig {
   allowedTools: Set<string>;
   db: Database;
   newMemoryIds: number[];
-  result: DreamResult;
+  result: DigestResult;
   logPrefix: string;
 }
 
 async function runToolLoop(config: ToolLoopConfig): Promise<void> {
   const { systemPrompt, initialMessage, model, maxIterations, allowedTools, db, newMemoryIds, result, logPrefix } = config;
-  const turns: DreamTurn[] = [];
+  const turns: DigestTurn[] = [];
 
   for (let i = 0; i < maxIterations; i++) {
-    const prompt = buildDreamTurnPrompt(systemPrompt, initialMessage, turns);
+    const prompt = buildDigestTurnPrompt(systemPrompt, initialMessage, turns);
 
     // Retry once on empty output (haiku sometimes returns empty under load)
     let output = await spawnClaude(prompt, model);
@@ -113,7 +110,7 @@ async function runToolLoop(config: ToolLoopConfig): Promise<void> {
     const toolCall = parseToolCall(output);
     if (!toolCall) {
       const snippet = output.length > 200 ? output.slice(0, 200) + "..." : output;
-      console.error(`[dream] ${logPrefix} Parse failed, output: ${snippet}`);
+      console.error(`[digest] ${logPrefix} Parse failed, output: ${snippet}`);
       result.errors.push(`${logPrefix} Iteration ${i}: could not parse tool call from output`);
       turns.push({ role: "assistant", content: output });
       turns.push({ role: "user", content: "Invalid output. Please output exactly ONE JSON object: {\"tool\":\"...\",\"input\":{...}}" });
@@ -179,16 +176,15 @@ export function getTotalMemoryCount(db: Database): number {
 // --- Main entry point ---
 
 /**
- * Run a single dream pass for an agent (consolidation + identity phases).
+ * Run a single digest pass for an agent (consolidation + identity phases).
  */
-export async function runDreamPass(config: DreamPassConfig): Promise<DreamResult> {
+export async function runDigestPass(config: DigestPassConfig): Promise<DigestResult> {
   const start = Date.now();
-  const result: DreamResult = {
+  const result: DigestResult = {
     operationsRequested: 0,
     operationsExecuted: 0,
     memoriesCreated: 0,
     memoriesMerged: 0,
-    memoriesPruned: 0,
     memoriesSuperseded: 0,
     associationsCreated: 0,
     reflectionOps: 0,
@@ -225,19 +221,19 @@ export async function runDreamPass(config: DreamPassConfig): Promise<DreamResult
       }
 
       // 3. Build consolidation prompts
-      const ctx: DreamContext = {
+      const ctx: DigestContext = {
         rawEventGroups: rawGroups,
         retrievalLogSummary,
       };
 
-      const systemPrompt = buildDreamSystemPrompt();
-      const initialMessage = buildDreamInitialMessage(ctx);
+      const systemPrompt = buildDigestSystemPrompt();
+      const initialMessage = buildDigestInitialMessage(ctx);
 
       if (config.dryRun) {
-        console.log("[dream] Dry run — prompt built, not executing");
-        console.log("[dream] System prompt length:", systemPrompt.length, "chars");
-        console.log("[dream] Initial message length:", initialMessage.length, "chars");
-        console.log("[dream] Raw event groups:", rawGroups.length);
+        console.log("[digest] Dry run — prompt built, not executing");
+        console.log("[digest] System prompt length:", systemPrompt.length, "chars");
+        console.log("[digest] Initial message length:", initialMessage.length, "chars");
+        console.log("[digest] Raw event groups:", rawGroups.length);
         result.durationMs = Date.now() - start;
         return result;
       }
@@ -264,6 +260,27 @@ export async function runDreamPass(config: DreamPassConfig): Promise<DreamResult
         const newMemories = loadNewMemories(db, newMemoryIds);
         const totalCount = getTotalMemoryCount(db);
 
+        // Query associated memories per identity anchor so haiku can see
+        // existing self-concept facts and pick supersedes_id targets
+        const associatedMemories: Record<string, { id: number; content: string; salience: number }[]> = {};
+        for (const node of identityNodes) {
+          const assocs = getAssociations(db, node.id);
+          const connectedIds = assocs
+            .filter(a => a.strength >= 0.5)
+            .map(a => a.connected_id);
+          if (connectedIds.length > 0) {
+            const placeholders = connectedIds.map(() => "?").join(",");
+            const memories = db.query(`
+              SELECT id, content, salience FROM memories
+              WHERE id IN (${placeholders}) AND archived_at IS NULL
+              ORDER BY salience DESC
+            `).all(...connectedIds) as { id: number; content: string; salience: number }[];
+            associatedMemories[node.role] = memories;
+          } else {
+            associatedMemories[node.role] = [];
+          }
+        }
+
         const reflectionCtx: ReflectionPassContext = {
           agentName: config.agentName,
           newMemories,
@@ -271,6 +288,7 @@ export async function runDreamPass(config: DreamPassConfig): Promise<DreamResult
             role: n.role, id: n.id, content: n.content,
           })),
           totalMemoryCount: totalCount,
+          associatedMemories,
         };
 
         await runToolLoop({
@@ -285,14 +303,6 @@ export async function runDreamPass(config: DreamPassConfig): Promise<DreamResult
           logPrefix: "[reflection]",
         });
 
-        // Recompile identity cache from individual memories
-        try {
-          recompileIdentityCache(db, "self", config.agentName);
-          recompileIdentityCache(db, "relationship", config.agentName);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          result.errors.push(`Identity cache recompile failed: ${msg}`);
-        }
       }
 
       // Post-consolidation: Clean source events from raw_events_fts
@@ -322,7 +332,7 @@ export async function runDreamPass(config: DreamPassConfig): Promise<DreamResult
         result.errors.push(`Post-pass marking failed: ${msg}`);
       }
 
-      // Compute current consolidation pressure for dream loop scheduling
+      // Compute current consolidation pressure for digest loop scheduling
       try {
         const { pressure } = getConsolidationPressure(db);
         result.pressure = pressure;
@@ -331,10 +341,10 @@ export async function runDreamPass(config: DreamPassConfig): Promise<DreamResult
         result.errors.push(`Pressure computation failed: ${msg}`);
       }
 
-      // Persist dream pass result for dashboard diagnostics
+      // Persist digest pass result for dashboard diagnostics
       try {
         db.run(
-          `INSERT INTO dream_passes
+          `INSERT INTO digest_passes
             (timestamp, duration_ms, ops_requested, ops_executed,
              memories_created, memories_merged, memories_pruned, memories_superseded,
              associations_created, identity_ops, errors)
@@ -346,7 +356,7 @@ export async function runDreamPass(config: DreamPassConfig): Promise<DreamResult
             result.operationsExecuted,
             result.memoriesCreated,
             result.memoriesMerged,
-            result.memoriesPruned,
+            0, // memories_pruned — pruning removed, column kept for schema compat
             result.memoriesSuperseded,
             result.associationsCreated,
             result.reflectionOps,
@@ -354,13 +364,13 @@ export async function runDreamPass(config: DreamPassConfig): Promise<DreamResult
           ],
         );
       } catch (err) {
-        console.error(`[dream] Failed to persist dream pass:`, err);
+        console.error(`[digest] Failed to persist digest pass:`, err);
       }
     } finally {
       db.close();
     }
   } catch (err) {
-    result.errors.push(`Dream pass failed: ${err instanceof Error ? err.message : String(err)}`);
+    result.errors.push(`Digest pass failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   result.durationMs = Date.now() - start;
@@ -442,13 +452,13 @@ function resolveMemoryRef(ref: unknown, newMemoryIds: number[]): number | null {
 const VALID_TYPES: Set<string> = new Set(["episodic", "fact"]);
 
 /**
- * Execute a dream tool call against the database.
+ * Execute a digest tool call against the database.
  */
 export function executeTool(
   db: Database,
   call: ToolCall,
   newMemoryIds: number[],
-  result: DreamResult,
+  result: DigestResult,
 ): unknown {
   if (!ALL_TOOLS.has(call.tool)) {
     throw new Error(`Unknown tool: ${call.tool}`);
@@ -557,13 +567,6 @@ export function executeTool(
       return { count };
     }
 
-    case "prune_memory": {
-      const pruned = pruneMemory(db, input.memory_id as number);
-      if (pruned) result.memoriesPruned++;
-      result.operationsExecuted++;
-      return { pruned };
-    }
-
     case "supersede_memory": {
       const targetRef = resolveMemoryRef(input.target_id, newMemoryIds);
       if (targetRef === null) {
@@ -586,21 +589,6 @@ export function executeTool(
       const sets = drainRetrievalLog(db);
       result.operationsExecuted++;
       return { co_retrieval_sets: sets };
-    }
-
-    case "reflect_on_self": {
-      const anchor = (input.anchor as "self" | "relationship") ?? "self";
-      const { newId } = reflectOnSelf(
-        db,
-        input.insight as string,
-        (input.source_event_ids as number[]) ?? [],
-        anchor,
-      );
-      newMemoryIds.push(newId);
-      result.memoriesCreated++;
-      result.reflectionOps++;
-      result.operationsExecuted++;
-      return { new_id: newId, ref: `new_${newMemoryIds.length - 1}` };
     }
 
     case "update_self_concept": {
@@ -663,20 +651,20 @@ export async function spawnClaude(prompt: string, model: string): Promise<string
     const exitCode = await proc.exited;
 
     if (exitCode !== 0) {
-      console.error(`[dream] claude exited with code ${exitCode}`);
-      if (stderr) console.error(`[dream] stderr: ${stderr.slice(0, 500)}`);
+      console.error(`[digest] claude exited with code ${exitCode}`);
+      if (stderr) console.error(`[digest] stderr: ${stderr.slice(0, 500)}`);
       return null;
     }
 
     const trimmed = stdout.trim();
     if (!trimmed) {
-      console.error(`[dream] claude returned empty stdout (exit 0)`);
-      if (stderr) console.error(`[dream] stderr: ${stderr.slice(0, 500)}`);
+      console.error(`[digest] claude returned empty stdout (exit 0)`);
+      if (stderr) console.error(`[digest] stderr: ${stderr.slice(0, 500)}`);
     }
 
     return trimmed;
   } catch (err) {
-    console.error(`[dream] Failed to spawn claude:`, err);
+    console.error(`[digest] Failed to spawn claude:`, err);
     return null;
   }
 }

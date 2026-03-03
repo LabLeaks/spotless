@@ -87,11 +87,11 @@ export function archiveUserMessage(
 
 /**
  * Archive a session boundary marker.
- * Inserted when a new conversation is detected so the eidetic trace
+ * Inserted when a new conversation is detected so the history trace
  * can show session breaks to the model.
  *
  * Session boundaries are marked pre-consolidated (consolidated=1) because
- * they don't contain conversation content — the dreamer filters them out
+ * they don't contain conversation content — the digester filters them out
  * anyway. Without this, they permanently inflate consolidation pressure.
  */
 export function archiveSessionBoundary(

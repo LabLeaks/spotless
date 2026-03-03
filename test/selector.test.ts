@@ -1,13 +1,13 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { openDb, initSchema } from "../src/db.ts";
-import { parseMemoryIds, extractProjectIdentity, sortByCreatedAt } from "../src/hippocampus.ts";
+import { parseMemoryIds, extractProjectIdentity, sortByCreatedAt } from "../src/selector.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unlinkSync } from "node:fs";
 
 function tempDb(): { db: Database; path: string } {
-  const path = join(tmpdir(), `spotless-hippo-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  const path = join(tmpdir(), `spotless-selector-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
   const db = openDb(path);
   initSchema(db);
   return { db, path };

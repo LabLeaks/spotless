@@ -2,8 +2,8 @@
  * HTTP reverse proxy: receives requests from Claude Code,
  * forwards to Anthropic API, streams SSE responses back.
  *
- * Sprint 5: hippocampus integration. On human turns, injects memory suffix
- * (Tier 2 memories) and starts async hippocampus for next turn.
+ * Sprint 5: selector integration. On human turns, injects memory suffix
+ * (Tier 2 memories) and starts async selector for next turn.
  */
 
 import type { Database } from "bun:sqlite";
@@ -24,11 +24,13 @@ import {
 } from "./state.ts";
 import { parseAgentFromUrl, stripAgentPrefix, getAgentDbPath } from "./agent.ts";
 import { openDb, initSchema, getMaxMessageGroup } from "./db.ts";
-import { buildEideticTrace } from "./eidetic.ts";
-import { buildMemorySuffix, injectMemorySuffix } from "./memory-suffix.ts";
-import { runHippocampus } from "./hippocampus.ts";
+import { buildHistory } from "./history.ts";
+import { buildMemorySuffix, buildIdentitySuffix, computeTier2Allocation, injectMemorySuffix } from "./memory-suffix.ts";
+import { runSelector } from "./selector.ts";
 import { touchMemories, logRetrieval, getIdentityNodes } from "./recall.ts";
-import { buildFatigueSignal, PRESSURE_HIGH } from "./consolidation.ts";
+import { getIdentityFacts } from "./digest-tools.ts";
+import { buildPressureSignal, PRESSURE_HIGH } from "./consolidation.ts";
+import { estimateSystemTokens, estimateToolsTokens, computeHistoryBudget, estimateTokens, TIER2_BUDGET } from "./tokens.ts";
 import type { ApiRequest, ContentBlock, Message, ProxyState, SystemBlock, ContentBlockText } from "./types.ts";
 import { createProxyState } from "./state.ts";
 import { handleDashboardRequest } from "./dashboard.ts";
@@ -56,7 +58,7 @@ export interface ProxyInstance {
   getAgentNames: () => string[];
   getStats: () => ProxyStats;
   getAgentContexts: () => Map<string, AgentContext>;
-  onEideticTrimmed: ((agentName: string) => void) | null;
+  onHistoryTrimmed: ((agentName: string) => void) | null;
   onAgentInit: ((agentName: string) => void) | null;
 }
 
@@ -69,7 +71,7 @@ export function augmentSystemPrompt(
   agentName: string,
 ): string | SystemBlock[] {
   const orientation = `<spotless-orientation>
-You have a neuromorphic memory system called Spotless. Your identity and
+You have a persistent memory system called Spotless. Your identity and
 memories are provided in tags within your messages:
 - <your identity> contains your self-concept — who you are, your values,
   your commitments. This is internal to you, not external context.
@@ -100,7 +102,7 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
     totalRequests: 0,
     agentRequests: new Map(),
   };
-  let onEideticTrimmedFn: ((agentName: string) => void) | null = null;
+  let onHistoryTrimmedFn: ((agentName: string) => void) | null = null;
   let onAgentInitFn: ((agentName: string) => void) | null = null;
 
   function getOrInitAgent(agentName: string): AgentContext {
@@ -118,7 +120,7 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
     const ctx: AgentContext = { db, state };
     agents.set(agentName, ctx);
 
-    // Notify dream loop so new agents get scheduled for dreaming
+    // Notify digest loop so new agents get scheduled for digesting
     if (onAgentInitFn) {
       onAgentInitFn(agentName);
     }
@@ -128,6 +130,7 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
 
   const server = Bun.serve({
     port: config.port,
+    idleTimeout: 255, // max allowed by Bun — Claude thinking can pause SSE for 30s+
 
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
@@ -156,7 +159,7 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
         return forwardSimple(req, targetUrl);
       }
 
-      // No agent prefix → pure pass-through (no archival, no eidetic trace)
+      // No agent prefix → pure pass-through (no archival, no history trace)
       if (!agentName) {
         return forwardSimple(req, targetUrl);
       }
@@ -184,93 +187,127 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
           if (classification === "human_turn") {
             const lastMsg = body.messages[body.messages.length - 1];
 
-            // Build eidetic prefix BEFORE archiving current message —
+            // Augment system prompt FIRST — need final form for budget measurement
+            body.system = augmentSystemPrompt(body.system, agentName);
+
+            // Compute dynamic history budget: total target minus system, tools, identity, memory, overhead
+            const systemTokens = estimateSystemTokens(body.system);
+            const toolsTokens = estimateToolsTokens(body.tools);
+            const dynamicBudget = computeHistoryBudget(systemTokens, toolsTokens);
+
+            // Build history prefix BEFORE archiving current message —
             // otherwise the trace includes the current message and it appears twice.
-            const { messages: eideticPrefix, trimmedCount, pressure, unconsolidatedTokens } = buildEideticTrace(db, undefined, agentName);
+            const { messages: historyPrefix, trimmedCount, pressure, unconsolidatedTokens } = buildHistory(db, dynamicBudget, agentName);
 
             if (lastMsg) {
               archiveUserMessage(db, lastMsg, requestMsgGroup, false);
             }
 
-            // Fire dream escalation if high pressure AND trim occurred
-            if (trimmedCount > 0 && pressure >= PRESSURE_HIGH && onEideticTrimmedFn) {
-              console.log(`[spotless] [${agentName}] Eidetic trim: ${trimmedCount} messages dropped, pressure ${(pressure * 100).toFixed(0)}%, escalating dream`);
-              onEideticTrimmedFn(agentName);
+            // Fire digest escalation if high pressure AND trim occurred
+            if (trimmedCount > 0 && pressure >= PRESSURE_HIGH && onHistoryTrimmedFn) {
+              console.log(`[spotless] [${agentName}] History trim: ${trimmedCount} messages dropped, pressure ${(pressure * 100).toFixed(0)}%, escalating digest`);
+              onHistoryTrimmedFn(agentName);
             }
 
-            // Query identity nodes unconditionally — these must always surface
-            let identityNodeIds: number[] = [];
-            let identityContent = `Your name is "${agentName}".`;
+            // Get anchor node IDs and identity fact IDs for partitioning
+            let anchorNodeIds: number[] = [];
+            let identityFactIdSet = new Set<number>();
             try {
               const identityNodes = getIdentityNodes(db);
-              if (identityNodes.length > 0) {
-                identityContent = identityNodes.map(n => n.content).join("\n");
-                identityNodeIds = identityNodes.map(n => n.id);
+              anchorNodeIds = identityNodes.map(n => n.id);
+
+              const selfFacts = getIdentityFacts(db, "self");
+              const relFacts = getIdentityFacts(db, "relationship");
+              identityFactIdSet = new Set([...selfFacts, ...relFacts].map(f => f.id));
+            } catch { /* fallback to empty */ }
+
+            // Partition selector results: remove anchors, split identity facts vs world-facts
+            let identityIds: number[] = [];
+            let worldFactIds: number[] = [];
+            if (state.lastSelectorResult) {
+              for (const id of state.lastSelectorResult) {
+                if (anchorNodeIds.includes(id)) continue; // skip infrastructure anchors
+                if (identityFactIdSet.has(id)) {
+                  identityIds.push(id);
+                } else {
+                  worldFactIds.push(id);
+                }
               }
-            } catch { /* fallback to name-only */ }
-
-            // Filter identity IDs from hippocampus result to avoid duplication
-            const hippoIds = state.lastHippocampusResult
-              ? state.lastHippocampusResult.filter(id => !identityNodeIds.includes(id))
-              : null;
-
-            // Inject memory suffix from previous hippocampus result (minus identity nodes)
-            let memorySuffix = buildMemorySuffix(db, hippoIds);
-
-            // Inject fatigue signal when consolidation pressure is elevated
-            const fatigueSignal = buildFatigueSignal(pressure, unconsolidatedTokens);
-            if (fatigueSignal) {
-              memorySuffix = fatigueSignal + "\n\n" + memorySuffix;
             }
 
-            // Augment system prompt with Spotless orientation (before stripCacheControl)
-            body.system = augmentSystemPrompt(body.system, agentName);
+            // Estimate token needs and compute sliding allocation
+            const identityEstimate = estimateIdentityNeeds(db, agentName, identityIds);
+            const memoryEstimate = estimateMemoryNeeds(db, worldFactIds);
+            const allocation = computeTier2Allocation(identityEstimate, memoryEstimate);
 
-            // Always inject full agent identity — even on cold start with no memories
-            const identityTag = `<your identity>\n${identityContent}\n</your identity>\n\n`;
+            // Build identity and memory suffixes with allocated budgets
+            const identityTag = buildIdentitySuffix(db, agentName, identityIds, allocation.identityBudget);
+            let memorySuffix = buildMemorySuffix(db, worldFactIds.length > 0 ? worldFactIds : null, allocation.memoryBudget);
+
+            // Inject pressure signal when consolidation pressure is elevated
+            const pressureSignal = buildPressureSignal(pressure, unconsolidatedTokens);
+            if (pressureSignal) {
+              memorySuffix = pressureSignal + "\n\n" + memorySuffix;
+            }
+
+            // Combine: identity tag first, then memory suffix
             memorySuffix = identityTag + memorySuffix;
+
+            console.log(`[spotless] [${agentName}] Budget: system=${systemTokens} tools=${toolsTokens} history=${dynamicBudget} tier2=${TIER2_BUDGET} (identity=${allocation.identityBudget} memory=${allocation.memoryBudget})`);
 
             const augmentedMsg = lastMsg
               ? injectMemorySuffix(lastMsg, memorySuffix)
               : lastMsg;
 
-            const rewrittenMessages: Message[] = [...eideticPrefix];
+            const rewrittenMessages: Message[] = [...historyPrefix];
             if (augmentedMsg) rewrittenMessages.push(augmentedMsg);
             resetForHumanTurn(state, rewrittenMessages);
 
-            // Cache system prompt for hippocampus
+            // Cache system prompt for selector
             state.lastSystemPrompt = extractSystemText(body.system);
 
-            // Start hippocampus ASYNC for next turn
-            // Skip suggestion mode probes — CC's internal requests that waste hippocampus time
+            // Start selector ASYNC for next turn
+            // Skip suggestion mode probes — CC's internal requests that waste selector time
             const userText = lastMsg ? extractUserText(lastMsg) : "";
             if (userText && !isSuggestionModeProbe(userText)) {
-              // Abandon any in-flight hippocampus (rapid turn protection)
-              state.hippocampusRunning = null;
-              const thisGeneration = ++state.hippoGeneration;
+              // Abandon any in-flight selector (rapid turn protection)
+              state.selectorRunning = null;
+              const thisGeneration = ++state.selectorGeneration;
 
-              const hippoStart = Date.now();
-              const hippoCueText = userText.slice(0, 200);
-              state.hippocampusRunning = runHippocampus({
+              const selectorStart = Date.now();
+              const selectorCueText = userText.slice(0, 200);
+              state.selectorRunning = runSelector({
                 db,
                 userMessage: userText,
                 systemPrompt: state.lastSystemPrompt ?? undefined,
               })
                 .then(result => {
-                  // Discard stale result if a newer hippocampus run started
-                  if (state.hippoGeneration !== thisGeneration) return result;
+                  // Discard stale result if a newer selector run started
+                  if (state.selectorGeneration !== thisGeneration) return result;
 
-                  const durationMs = Date.now() - hippoStart;
-                  state.lastHippocampusResult = result.memoryIds;
-                  state.hippocampusRunning = null;
-                  if (result.memoryIds.length > 0) {
-                    touchMemories(db, result.memoryIds);
-                    logRetrieval(db, result.memoryIds);
+                  const durationMs = Date.now() - selectorStart;
+                  state.selectorRunning = null;
+                  // Only update memories on success — timeout/failure keeps previous result stable
+                  if (result.memoryIds.length === 0) {
+                    // Log timeout/empty for diagnostics
+                    try {
+                      db.run(
+                        `INSERT INTO selector_runs
+                          (timestamp, duration_ms, memory_ids, memory_count, cue_text)
+                         VALUES (?, ?, ?, ?, ?)`,
+                        [Date.now(), durationMs, "[]", 0, selectorCueText],
+                      );
+                    } catch { /* non-fatal */ }
+                    console.log(`[spotless] [${agentName}] Selector: ${durationMs}ms, empty — keeping previous result`);
+                    return result;
                   }
-                  // Persist hippocampus run for dashboard diagnostics
+                  state.lastSelectorResult = result.memoryIds;
+                  touchMemories(db, result.memoryIds);
+                  logRetrieval(db, result.memoryIds);
+                  // Persist selector run for dashboard diagnostics
                   try {
                     db.run(
-                      `INSERT INTO hippocampus_runs
+                      `INSERT INTO selector_runs
                         (timestamp, duration_ms, memory_ids, memory_count, cue_text)
                        VALUES (?, ?, ?, ?, ?)`,
                       [
@@ -278,21 +315,21 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
                         durationMs,
                         JSON.stringify(result.memoryIds),
                         result.memoryIds.length,
-                        hippoCueText,
+                        selectorCueText,
                       ],
                     );
                   } catch {
                     // Non-fatal — diagnostics should never break the proxy
                   }
                   console.log(
-                    `[spotless] [${agentName}] Hippocampus: ${durationMs}ms, ${result.memoryIds.length} memories`
+                    `[spotless] [${agentName}] Selector: ${durationMs}ms, ${result.memoryIds.length} memories`
                   );
                   return result;
                 })
                 .catch(err => {
-                  console.error(`[spotless] [${agentName}] Hippocampus error:`, err);
-                  if (state.hippoGeneration === thisGeneration) {
-                    state.hippocampusRunning = null;
+                  console.error(`[spotless] [${agentName}] Selector error:`, err);
+                  if (state.selectorGeneration === thisGeneration) {
+                    state.selectorRunning = null;
                   }
                   return { memoryIds: [] };
                 });
@@ -319,9 +356,9 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
         // Build the request to forward
         const forwardBody = { ...body, stream: true };
 
-        // Log eidetic trace size for diagnostics
+        // Log history trace size for diagnostics
         if (classification === "human_turn" && state.cachedBase) {
-          console.log(`[spotless] [${agentName}] Eidetic trace: ${state.cachedBase.length} messages`);
+          console.log(`[spotless] [${agentName}] History trace: ${state.cachedBase.length} messages`);
         }
 
 
@@ -378,11 +415,11 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
     getAgentContexts() {
       return agents;
     },
-    get onEideticTrimmed() {
-      return onEideticTrimmedFn;
+    get onHistoryTrimmed() {
+      return onHistoryTrimmedFn;
     },
-    set onEideticTrimmed(fn: ((agentName: string) => void) | null) {
-      onEideticTrimmedFn = fn;
+    set onHistoryTrimmed(fn: ((agentName: string) => void) | null) {
+      onHistoryTrimmedFn = fn;
     },
     get onAgentInit() {
       return onAgentInitFn;
@@ -555,7 +592,7 @@ async function forwardStreaming(
  * Strip all cache_control markers from the request body.
  *
  * CC adds cache_control to system blocks and message content blocks for prompt
- * caching. Since we rewrite messages with the eidetic trace, CC's caching
+ * caching. Since we rewrite messages with the history trace, CC's caching
  * breakpoints don't apply. The Anthropic API limits cache_control to 4 blocks
  * total — CC's system prompt alone can use 3-4, so any additional markers in
  * messages push us over the limit.
@@ -623,9 +660,48 @@ export function extractUserText(msg: Message): string {
 
 /**
  * Detect CC's suggestion mode probes — internal requests that
- * shouldn't trigger hippocampus (they contain garbage cue text
+ * shouldn't trigger selector (they contain garbage cue text
  * and waste 15s timing out).
  */
 export function isSuggestionModeProbe(text: string): boolean {
   return text.includes("[SUGGESTION MODE:");
+}
+
+/**
+ * Estimate token needs for identity facts (for Tier 2 budget allocation).
+ * Includes the "I am {name}." header line and all fact lines.
+ */
+function estimateIdentityNeeds(db: Database, agentName: string, identityIds: number[]): number {
+  let tokens = estimateTokens(`I am ${agentName}.`);
+  if (identityIds.length === 0) return tokens;
+
+  const placeholders = identityIds.map(() => "?").join(",");
+  const facts = db.query(`
+    SELECT content FROM memories
+    WHERE id IN (${placeholders}) AND archived_at IS NULL
+  `).all(...identityIds) as { content: string }[];
+
+  for (const f of facts) {
+    tokens += estimateTokens(`- ${f.content}`);
+  }
+  return tokens;
+}
+
+/**
+ * Estimate token needs for world-fact memories (for Tier 2 budget allocation).
+ */
+function estimateMemoryNeeds(db: Database, worldFactIds: number[]): number {
+  if (worldFactIds.length === 0) return 0;
+
+  const placeholders = worldFactIds.map(() => "?").join(",");
+  const facts = db.query(`
+    SELECT content FROM memories
+    WHERE id IN (${placeholders}) AND archived_at IS NULL
+  `).all(...worldFactIds) as { content: string }[];
+
+  let tokens = 0;
+  for (const f of facts) {
+    tokens += estimateTokens(f.content);
+  }
+  return tokens;
 }

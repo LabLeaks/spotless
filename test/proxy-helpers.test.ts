@@ -4,6 +4,17 @@ import { extractSystemText, extractUserText, isSuggestionModeProbe, augmentSyste
 import { openDb, initSchema } from "../src/db.ts";
 import { getIdentityNodes } from "../src/recall.ts";
 import { buildMemorySuffix } from "../src/memory-suffix.ts";
+import {
+  estimateSystemTokens,
+  estimateToolsTokens,
+  computeHistoryBudget,
+  estimateTokens,
+  CONTEXT_BUDGET,
+  TIER2_BUDGET,
+  IDENTITY_FLOOR,
+  MEMORY_FLOOR,
+  SUFFIX_OVERHEAD,
+} from "../src/tokens.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unlinkSync } from "node:fs";
@@ -108,7 +119,7 @@ describe("identity node surfacing", () => {
     db.close();
   });
 
-  test("identity node IDs filtered from hippocampus result avoids duplication", () => {
+  test("identity node IDs filtered from selector result avoids duplication", () => {
     const { db, path } = tempDb();
     cleanup.push(path);
 
@@ -124,21 +135,21 @@ describe("identity node surfacing", () => {
     // Create regular memory
     db.run(
       "INSERT INTO memories (content, salience, created_at, last_accessed, access_count) VALUES (?, ?, ?, ?, ?)",
-      ["User's dog is named Biscuit.", 0.7, now + 1, now + 1, 0],
+      ["Project started in March 2024.", 0.7, now + 1, now + 1, 0],
     );
     const factId = (db.query("SELECT last_insert_rowid() as id").get() as { id: number }).id;
 
-    // Simulate hippocampus returning both identity and regular memories
-    const hippoResult = [selfId, factId];
+    // Simulate selector returning both identity and regular memories
+    const selectorResult = [selfId, factId];
     const identityNodeIds = getIdentityNodes(db).map(n => n.id);
 
     // Filter identity IDs
-    const filteredIds = hippoResult.filter(id => !identityNodeIds.includes(id));
+    const filteredIds = selectorResult.filter(id => !identityNodeIds.includes(id));
     expect(filteredIds).toEqual([factId]);
 
     // Memory suffix from filtered IDs contains only the regular memory
     const suffix = buildMemorySuffix(db, filteredIds);
-    expect(suffix).toContain("Biscuit");
+    expect(suffix).toContain("March 2024");
     expect(suffix).not.toContain("nova");
 
     db.close();
@@ -186,7 +197,7 @@ describe("augmentSystemPrompt", () => {
     expect(typeof result).toBe("string");
     expect(result as string).toContain("<spotless-orientation>");
     expect(result as string).toContain("</spotless-orientation>");
-    expect(result as string).toContain("neuromorphic memory system");
+    expect(result as string).toContain("persistent memory system");
   });
 
   test("prepends orientation to string system prompt", () => {
@@ -231,5 +242,79 @@ describe("augmentSystemPrompt", () => {
   test("orientation does NOT contain <your memories> tag", () => {
     const result = augmentSystemPrompt(undefined, "nova") as string;
     expect(result).not.toContain("<your memories>");
+  });
+});
+
+describe("estimateSystemTokens", () => {
+  test("returns 0 for undefined", () => {
+    expect(estimateSystemTokens(undefined)).toBe(0);
+  });
+
+  test("estimates string system prompt", () => {
+    const text = "You are a helpful assistant."; // 28 chars → 7 tokens
+    expect(estimateSystemTokens(text)).toBe(estimateTokens(text));
+  });
+
+  test("estimates SystemBlock[] system prompt", () => {
+    const blocks = [
+      { type: "text" as const, text: "Block one." },
+      { type: "text" as const, text: "Block two." },
+    ];
+    const expected = estimateTokens("Block one.") + estimateTokens("Block two.");
+    expect(estimateSystemTokens(blocks)).toBe(expected);
+  });
+});
+
+describe("estimateToolsTokens", () => {
+  test("returns 0 for undefined", () => {
+    expect(estimateToolsTokens(undefined)).toBe(0);
+  });
+
+  test("returns 0 for empty array", () => {
+    expect(estimateToolsTokens([])).toBe(0);
+  });
+
+  test("estimates tool definitions", () => {
+    const tools = [
+      { name: "read_file", description: "Read a file", input_schema: { type: "object", properties: { path: { type: "string" } } } },
+    ];
+    const expected = estimateTokens(JSON.stringify(tools));
+    expect(estimateToolsTokens(tools)).toBe(expected);
+  });
+});
+
+describe("computeHistoryBudget", () => {
+  test("small system/tools → history gets most of the budget", () => {
+    // system=1000, tools=2000 → available = 120000 - 1000 - 2000 - 12000 - 1000 = 104000
+    const budget = computeHistoryBudget(1000, 2000);
+    expect(budget).toBe(CONTEXT_BUDGET - 1000 - 2000 - TIER2_BUDGET - SUFFIX_OVERHEAD);
+    expect(budget).toBe(104000);
+  });
+
+  test("large system/tools → history is reduced", () => {
+    // system=20000, tools=40000 → available = 120000 - 20000 - 40000 - 12000 - 1000 = 47000
+    const budget = computeHistoryBudget(20000, 40000);
+    expect(budget).toBe(47000);
+  });
+
+  test("very large system/tools → history hits floor (20K minimum)", () => {
+    // system=40000, tools=50000 → available = 120000 - 40000 - 50000 - 12000 - 1000 = 17000 → floor 20000
+    const budget = computeHistoryBudget(40000, 50000);
+    expect(budget).toBe(20000);
+  });
+
+  test("zero system/tools → maximum history budget", () => {
+    const budget = computeHistoryBudget(0, 0);
+    expect(budget).toBe(CONTEXT_BUDGET - TIER2_BUDGET - SUFFIX_OVERHEAD);
+    expect(budget).toBe(107000);
+  });
+});
+
+describe("tier 2 budget", () => {
+  test("TIER2_BUDGET is used as reservation in computeHistoryBudget", () => {
+    // Budget formula subtracts TIER2_BUDGET (12K combined pool)
+    const withTier2 = computeHistoryBudget(10000, 10000);
+    // 120000 - 10000 - 10000 - 12000 - 1000 = 87000
+    expect(withTier2).toBe(87000);
   });
 });

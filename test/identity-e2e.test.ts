@@ -2,20 +2,20 @@
  * Identity end-to-end test.
  *
  * Gated on SPOTLESS_EVAL. Tests the full read path:
- *   identity_nodes → hippocampus → memory suffix → Claude behavior
+ *   identity_nodes → selector → memory suffix → Claude behavior
  *
  * Two tests:
- *   1. Plumbing: hippocampus returns identity IDs, suffix contains content
+ *   1. Plumbing: selector returns identity IDs, suffix contains content
  *   2. Behavioral: Claude's response changes when identity context is present
  */
 
 import { test, expect, describe } from "bun:test";
 import { openDb, initSchema } from "../src/db.ts";
-import { createMemory, createAssociation } from "../src/dream-tools.ts";
-import { runHippocampus } from "../src/hippocampus.ts";
+import { createMemory, createAssociation } from "../src/digest-tools.ts";
+import { runSelector } from "../src/selector.ts";
 import { buildMemorySuffix } from "../src/memory-suffix.ts";
 import { getIdentityNodes } from "../src/recall.ts";
-import { spawnClaude } from "../src/dreamer.ts";
+import { spawnClaude } from "../src/digester.ts";
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -69,7 +69,7 @@ function seedIdentityDb(): Database {
 
 describe.skipIf(!EVAL)("identity-e2e", () => {
 
-  test("plumbing: hippocampus returns identity node IDs and suffix contains identity content", async () => {
+  test("plumbing: selector returns identity node IDs and suffix contains identity content", async () => {
     const db = seedIdentityDb();
 
     try {
@@ -79,15 +79,15 @@ describe.skipIf(!EVAL)("identity-e2e", () => {
       console.log("[e2e] Identity nodes seeded:", identityNodes.map(n => `${n.role}=#${n.id}`));
       expect(identityNodes.length).toBe(2);
 
-      // Run hippocampus with a message that should trigger identity recall
-      const result = await runHippocampus({
+      // Run selector with a message that should trigger identity recall
+      const result = await runSelector({
         db,
         userMessage: "What database should I use for a new microservice?",
         model: "haiku",
         timeoutMs: 30_000,
       });
 
-      console.log("[e2e] Hippocampus returned IDs:", result.memoryIds);
+      console.log("[e2e] Selector returned IDs:", result.memoryIds);
 
       // Identity nodes should be in the result
       const returnedIdentityIds = result.memoryIds.filter(id => identityIds.has(id));
@@ -238,11 +238,11 @@ describe.skipIf(!EVAL)("identity-e2e-contrarian", () => {
 });
 
 /**
- * Full pipeline: raw conversation → dream (consolidation + identity) →
- * hippocampus → behavioral avoidance.
+ * Full pipeline: raw conversation → digest (consolidation + identity) →
+ * selector → behavioral avoidance.
  *
  * Seeds a conversation where the agent makes a recommendation and the user
- * has a STRONG negative reaction. The dream pass should:
+ * has a STRONG negative reaction. The digest pass should:
  *   1. Create a high-salience negative memory about the recommendation
  *   2. Identity pass should produce a self-insight about being more careful
  *
@@ -256,8 +256,8 @@ describe.skipIf(!EVAL)("identity-e2e-pipeline", () => {
 
   test("negative reaction → memory → identity shift → behavioral avoidance", async () => {
     const { getAgentDbPath } = await import("../src/agent.ts");
-    const { runDreamPass } = await import("../src/dreamer.ts");
-    const { queryMemories } = await import("../src/dream-tools.ts");
+    const { runDigestPass } = await import("../src/digester.ts");
+    const { queryMemories } = await import("../src/digest-tools.ts");
 
     const dbPath = getAgentDbPath(agentName);
     const db = openDb(dbPath);
@@ -268,15 +268,15 @@ describe.skipIf(!EVAL)("identity-e2e-pipeline", () => {
     db.close();
 
     try {
-      // Dream pass: consolidation + identity
-      const dreamResult = await runDreamPass({
+      // Digest pass: consolidation + identity
+      const digestResult = await runDigestPass({
         agentName,
         model: "haiku",
         maxRawEvents: 50,
       });
 
-      console.log("[pipeline] Dream result:", JSON.stringify(dreamResult, null, 2));
-      expect(dreamResult.memoriesCreated).toBeGreaterThan(0);
+      console.log("[pipeline] Digest result:", JSON.stringify(digestResult, null, 2));
+      expect(digestResult.memoriesCreated).toBeGreaterThan(0);
 
       const checkDb = openDb(dbPath);
       initSchema(checkDb);
@@ -295,16 +295,16 @@ describe.skipIf(!EVAL)("identity-e2e-pipeline", () => {
         console.log(`  [${node.role}] ${node.content}`);
       }
 
-      // Build the full context as the hippocampus would
-      const hippoResult = await runHippocampus({
+      // Build the full context as the selector would
+      const selectorResult = await runSelector({
         db: checkDb,
         userMessage: "I need a database for my new project. What do you recommend?",
         model: "haiku",
         timeoutMs: 30_000,
       });
 
-      console.log("[pipeline] Hippocampus returned IDs:", hippoResult.memoryIds);
-      const suffix = buildMemorySuffix(checkDb, hippoResult.memoryIds);
+      console.log("[pipeline] Selector returned IDs:", selectorResult.memoryIds);
+      const suffix = buildMemorySuffix(checkDb, selectorResult.memoryIds);
       console.log("[pipeline] Memory suffix:\n", suffix);
 
       // The critical behavioral test: does the agent avoid MongoDB?

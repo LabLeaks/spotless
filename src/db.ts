@@ -8,7 +8,7 @@
 import { Database } from "bun:sqlite";
 
 const SCHEMA = `
--- Tier 1: Eidetic Archive
+-- Tier 1: History Archive
 CREATE TABLE IF NOT EXISTS raw_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   timestamp INTEGER NOT NULL,
@@ -28,7 +28,7 @@ CREATE INDEX IF NOT EXISTS idx_raw_message_group ON raw_events(message_group);
 `;
 // NOTE: idx_raw_consolidated is created in migrateConsolidated() after the column is added
 
-// --- Tier 2: Engram Network ---
+// --- Tier 2: Memory Graph ---
 
 const TIER2_SCHEMA = `
 CREATE TABLE IF NOT EXISTS memories (
@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS identity_nodes (
 // --- Diagnostic tables ---
 
 const DIAGNOSTIC_SCHEMA = `
-CREATE TABLE IF NOT EXISTS dream_passes (
+CREATE TABLE IF NOT EXISTS digest_passes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   timestamp INTEGER NOT NULL,
   duration_ms INTEGER NOT NULL,
@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS dream_passes (
   errors TEXT
 );
 
-CREATE TABLE IF NOT EXISTS hippocampus_runs (
+CREATE TABLE IF NOT EXISTS selector_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   timestamp INTEGER NOT NULL,
   duration_ms INTEGER NOT NULL,
@@ -299,6 +299,37 @@ export function migrateAdr005(db: Database): void {
 }
 
 /**
+ * Migrate existing databases: rename dream_passes → digest_passes
+ * and hippocampus_runs → selector_runs.
+ * Idempotent — safe to run on both fresh and existing databases.
+ */
+export function migrateTableRenames(db: Database): void {
+  // Rename dream_passes → digest_passes (if old table exists)
+  try {
+    const old = db.query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='dream_passes'"
+    ).get();
+    if (old) {
+      db.run("ALTER TABLE dream_passes RENAME TO digest_passes");
+    }
+  } catch {
+    // Already renamed or doesn't exist
+  }
+
+  // Rename hippocampus_runs → selector_runs (if old table exists)
+  try {
+    const old = db.query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='hippocampus_runs'"
+    ).get();
+    if (old) {
+      db.run("ALTER TABLE hippocampus_runs RENAME TO selector_runs");
+    }
+  } catch {
+    // Already renamed or doesn't exist
+  }
+}
+
+/**
  * Rebuild memories_fts triggers to handle archived_at semantics.
  * Drops old triggers and recreates with archive-aware logic.
  */
@@ -327,6 +358,9 @@ export function initSchema(db: Database): void {
 
   // Tier 2
   db.run(TIER2_SCHEMA);
+
+  // Migrate old table names before creating diagnostic tables
+  migrateTableRenames(db);
 
   // Diagnostic tables
   db.run(DIAGNOSTIC_SCHEMA);

@@ -1,9 +1,9 @@
 /**
- * Dreaming prompt builder.
+ * Digest prompt builder.
  *
  * Sprint 5 refactor: tool-use conversation instead of single-shot JSON.
  * The prompt gives consolidation goals and tool definitions. The agent
- * explores the engram network through tool calls.
+ * explores the memory graph through tool calls.
  */
 
 interface RawEventSummary {
@@ -18,20 +18,20 @@ interface RawEventGroupSummary {
   events: RawEventSummary[];
 }
 
-export interface DreamContext {
+export interface DigestContext {
   rawEventGroups: RawEventGroupSummary[];
   retrievalLogSummary: string | null;
 }
 
-export interface DreamTurn {
+export interface DigestTurn {
   role: "assistant" | "user";
   content: string;
 }
 
 /**
- * Build the dreaming system prompt (goals + tool definitions).
+ * Build the digest system prompt (goals + tool definitions).
  */
-export function buildDreamSystemPrompt(): string {
+export function buildDigestSystemPrompt(): string {
   return `You are a memory consolidation system. You explore a conversation database and build a structured memory network.
 
 You work by calling tools — one tool call per turn. After each call you'll see the result and decide what to do next.
@@ -58,8 +58,6 @@ Follow this order:
 - **fact**: 0.5-0.9 — corrections via \`supersede_memory\` at 0.85+; project facts, preferences, configurations at 0.5-0.7; architecture decisions at 0.7-0.9
 - **episodic**: 0.4-0.9 — emotional high-stakes moments at 0.8-0.9; decisions and resolutions at 0.6-0.8; routine interactions at 0.4-0.5
 
-**Pruning**: Use sparingly. Only for genuinely worthless memories — not for old versions of things that might still contain useful information.
-
 ## TOOLS
 
 Call exactly ONE tool per turn. Output ONLY a JSON object (no explanation, no markdown).
@@ -81,7 +79,7 @@ Get all associations for a memory.
 ### create_memory
 Create a new memory linked to source raw events. Specify a type:
 - **episodic**: events, experiences, observations, emotional moments — "I spent 3 hours debugging the SSE bug", "That breakthrough felt incredible", "We had a tense exchange about architecture"
-- **fact**: atomic knowledge that could change — "User's dog is Biscuit", "Project uses Bun runtime", "User's favorite color is purple"
+- **fact**: atomic knowledge that could change — "Project started in March 2024", "Project uses Bun runtime", "Preferred DB is PostgreSQL"
 Emotional experiences are episodic with higher salience (0.8-0.9). Default to episodic if unsure.
 \`{"tool":"create_memory","input":{"content":"Atomic fact here","salience":0.7,"type":"episodic","source_event_ids":[1,2,3]}}\`
 
@@ -101,10 +99,6 @@ Merge multiple memories into one. Transfers associations.
 ### count_human_turns_between
 Count human turns between two raw event IDs (temporal proximity).
 \`{"tool":"count_human_turns_between","input":{"event_a":10,"event_b":50}}\`
-
-### prune_memory
-Delete a low-value memory (must be low-salience, zero-access, no strong associations).
-\`{"tool":"prune_memory","input":{"memory_id":12}}\`
 
 ### supersede_memory
 Replace a wrong memory with corrected content. Old version is archived (excluded from search, preserved for provenance). Use when the user explicitly corrected something. NOT for elaborations — only when old content is factually wrong.
@@ -133,7 +127,7 @@ Signal completion.
 /**
  * Build the initial user message with raw events and retrieval log.
  */
-export function buildDreamInitialMessage(ctx: DreamContext): string {
+export function buildDigestInitialMessage(ctx: DigestContext): string {
   const parts: string[] = [];
 
   parts.push("Consolidate the following new conversation data into the memory network.");
@@ -163,13 +157,13 @@ export function buildDreamInitialMessage(ctx: DreamContext): string {
 }
 
 /**
- * Build a full prompt for a dream turn: system + conversation history.
+ * Build a full prompt for a digest turn: system + conversation history.
  * Each re-invocation sends the full history.
  */
-export function buildDreamTurnPrompt(
+export function buildDigestTurnPrompt(
   systemPrompt: string,
   initialMessage: string,
-  turns: DreamTurn[],
+  turns: DigestTurn[],
 ): string {
   const parts: string[] = [systemPrompt, "\n---\n", initialMessage];
 
@@ -195,18 +189,19 @@ export interface ReflectionPassContext {
   newMemories: { id: number; content: string; salience: number }[];
   identityNodes: { role: string; id: number; content: string }[];
   totalMemoryCount: number;
+  associatedMemories?: Record<string, { id: number; content: string; salience: number }[]>;
 }
 
 /**
  * Build the reflection pass system prompt.
- * Korsgaard reflective endorsement framing. Agent-named first-person.
+ * Reflective endorsement framing. Agent-named first-person.
  */
 export function buildReflectionSystemPrompt(agentName: string): string {
   return `You are conducting a reflection pass for an LLM coding agent named ${agentName}. Write as ${agentName} — all content should be first-person from ${agentName}'s perspective.
 
 New conversation data has just been consolidated into memories. Now review those memories and ask: what do they reveal about who I am, how I relate to this human, and what matters to me?
 
-This is reflective endorsement (Korsgaard): which of these experiences do I endorse as part of who I am? Which observations about myself and this relationship do I want to carry forward?
+This is reflective endorsement: which of these experiences do I endorse as part of who I am? Which observations about myself and this relationship do I want to carry forward?
 
 You work by calling tools — one tool call per turn. After each call you'll see the result and decide what to do next.
 
@@ -215,15 +210,15 @@ You work by calling tools — one tool call per turn. After each call you'll see
 - First person as ${agentName}: "I, ${agentName}, tend to...", "They trust me...", not "The agent tends to..."
 - Identity is lived experience, not a profile card. "I recommended MongoDB and watched it fail — I won't make that mistake again" not "User prefers PostgreSQL." These are YOUR convictions from YOUR experiences
 - Self-insights should synthesize across interactions, not restate single events
-- **CRITICAL**: Read existing self-concept facts carefully. If they already cover the ground, call done. Only create new reflections or update self-concept when the new memories reveal something genuinely new
+- **CRITICAL**: Read the EXISTING SELF-CONCEPT FACTS listed below carefully. If an existing fact already covers this ground, either supersede it with a refined version (using \`supersedes_id\`) or call done. Do NOT create alongside — that causes bloat
 - If nothing meaningful changed, call done — quiet sessions are fine. Most sessions should end with done
 - mark_significance at most once per memory
 
 ## THREE-STEP PROCESS
 
 1. **Reflect**: What do these new memories reveal about how I work, how I relate to the user, what I value?
-2. **Classify**: Self-concept observations → \`update_self_concept\` (type='fact', current-state, supersedable: "I value directness"). Narrative reflections → \`reflect_on_self\` (type='episodic', permanent: "That moment I chose directness over diplomacy")
-3. **Done**: Call done when finished. Identity cache is automatically recompiled after this pass
+2. **Update**: All reflections go through \`update_self_concept\` (type='fact', current-state, supersedable). If an existing self-concept covers similar ground, supersede it with \`supersedes_id\`. If it's genuinely new territory, create without superseding
+3. **Done**: Call done when finished
 
 ## TOOLS
 
@@ -233,11 +228,6 @@ Call exactly ONE tool per turn. Output ONLY a JSON object (no explanation, no ma
 Search existing memories for context.
 \`{"tool":"query_memories","input":{"query":"optional FTS5 search","min_salience":0.0,"limit":50}}\`
 All fields optional. Omit "query" to list by salience.
-
-### reflect_on_self
-Record a narrative self-reflection about ${agentName}. Creates an episodic memory connected to an identity anchor. Permanent — these are experiences, not updatable facts.
-\`{"tool":"reflect_on_self","input":{"insight":"I, ${agentName}, chose directness over diplomacy in that debugging session and it built trust","anchor":"self","source_event_ids":[10,11]}}\`
-anchor: "self" (default) or "relationship"
 
 ### update_self_concept
 Create or update a self-concept fact. These are current-state observations about ${agentName} that can be superseded when they change. Use \`supersedes_id\` to archive and replace an outdated self-concept.
@@ -254,8 +244,7 @@ Signal completion.
 
 ## RULES
 - Output ONLY one JSON object per turn — no prose, no markdown fences
-- Self-concept facts are current-state — use \`update_self_concept\` with \`supersedes_id\` to replace outdated ones
-- Narrative reflections are permanent — use \`reflect_on_self\` for experiences that define who you are
+- All self-concept output uses \`update_self_concept\` — use \`supersedes_id\` to replace outdated ones
 - End with {"tool":"done","input":{}} when finished`;
 }
 
@@ -276,6 +265,15 @@ export function buildReflectionInitialMessage(ctx: ReflectionPassContext): strin
       const label = node.role === "self" ? "Self-Concept"
         : "Relationship Dynamic";
       parts.push(`\n**${label}** (memory #${node.id}):\n${node.content}`);
+
+      // Show individual associated memories so haiku can pick supersedes_id targets
+      const assocMems = ctx.associatedMemories?.[node.role];
+      if (assocMems && assocMems.length > 0) {
+        parts.push(`\nExisting ${node.role} facts (use supersedes_id to replace):`);
+        for (const m of assocMems) {
+          parts.push(`  - #${m.id} (salience ${m.salience}): ${m.content}`);
+        }
+      }
     }
   }
 

@@ -1,13 +1,13 @@
 import { test, expect, describe, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { openDb, initSchema } from "../src/db.ts";
-import { buildEideticTrace } from "../src/eidetic.ts";
+import { buildHistory } from "../src/history.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unlinkSync } from "node:fs";
 
 function tempDb(): { db: Database; path: string } {
-  const path = join(tmpdir(), `spotless-eidetic-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  const path = join(tmpdir(), `spotless-history-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
   const db = openDb(path);
   initSchema(db);
   return { db, path };
@@ -28,7 +28,7 @@ function insertEvent(
   );
 }
 
-describe("eidetic trace: tool pairing", () => {
+describe("history trace: tool pairing", () => {
   const cleanup: string[] = [];
 
   afterEach(() => {
@@ -55,7 +55,7 @@ describe("eidetic trace: tool pairing", () => {
     // Group 5: normal assistant response
     insertEvent(db, 5, "assistant", "text", "sure, continuing");
 
-    const { messages: trace } = buildEideticTrace(db, 100_000);
+    const { messages: trace } = buildHistory(db, 100_000);
 
     // The orphaned tool_result should be excluded
     const allContent = trace.map(m => {
@@ -85,7 +85,7 @@ describe("eidetic trace: tool pairing", () => {
     // Group 4: assistant responds
     insertEvent(db, 4, "assistant", "text", "the tool worked");
 
-    const { messages: trace } = buildEideticTrace(db, 100_000);
+    const { messages: trace } = buildHistory(db, 100_000);
 
     const allContent = trace.map(m => {
       if (typeof m.content === "string") return m.content;
@@ -124,7 +124,7 @@ describe("eidetic trace: tool pairing", () => {
     insertEvent(db, 5, "user", "text", "new question");
     insertEvent(db, 6, "assistant", "text", "new answer");
 
-    const { messages: trace } = buildEideticTrace(db, 100_000);
+    const { messages: trace } = buildHistory(db, 100_000);
 
     const allContent = trace.map(m => {
       if (typeof m.content === "string") return m.content;
@@ -165,7 +165,7 @@ describe("eidetic trace: tool pairing", () => {
     // Group 7: assistant responds
     insertEvent(db, 7, "assistant", "text", "you're welcome");
 
-    const { messages: trace } = buildEideticTrace(db, 100_000);
+    const { messages: trace } = buildHistory(db, 100_000);
 
     // The tool_result message should NOT have "--- new session ---" text mixed in
     for (const msg of trace) {
@@ -201,7 +201,7 @@ describe("eidetic trace: tool pairing", () => {
     insertEvent(db, 1, "user", "text", "hello");
     insertEvent(db, 2, "assistant", "text", "hi");
 
-    const { messages: trace } = buildEideticTrace(db, 100_000, "nova");
+    const { messages: trace } = buildHistory(db, 100_000, "nova");
 
     // Preamble should mention the agent name
     const preamble = trace[0];
@@ -217,7 +217,7 @@ describe("eidetic trace: tool pairing", () => {
   });
 });
 
-describe("eidetic trace: trimmedCount", () => {
+describe("history trace: trimmedCount", () => {
   const cleanup: string[] = [];
 
   afterEach(() => {
@@ -241,7 +241,7 @@ describe("eidetic trace: trimmedCount", () => {
     }
 
     // Use a tiny budget that can't fit all messages
-    const { messages, trimmedCount } = buildEideticTrace(db, 1000);
+    const { messages, trimmedCount } = buildHistory(db, 1000);
 
     expect(trimmedCount).toBeGreaterThan(0);
     // Should still have some messages (not all trimmed)
@@ -259,7 +259,7 @@ describe("eidetic trace: trimmedCount", () => {
     insertEvent(db, 1, "user", "text", "hello");
     insertEvent(db, 2, "assistant", "text", "hi");
 
-    const { messages, trimmedCount } = buildEideticTrace(db, 100_000);
+    const { messages, trimmedCount } = buildHistory(db, 100_000);
 
     expect(trimmedCount).toBe(0);
     // Preamble (2) + content (2) = 4 messages
@@ -272,7 +272,7 @@ describe("eidetic trace: trimmedCount", () => {
     const { db, path } = tempDb();
     cleanup.push(path);
 
-    const { messages, trimmedCount } = buildEideticTrace(db, 100_000);
+    const { messages, trimmedCount } = buildHistory(db, 100_000);
 
     expect(trimmedCount).toBe(0);
     expect(messages.length).toBe(0);
@@ -305,7 +305,7 @@ describe("eidetic trace: trimmedCount", () => {
     // Group 7: assistant responds again
     insertEvent(db, 7, "assistant", "text", "still the same file");
 
-    const { messages: trace } = buildEideticTrace(db, 100_000);
+    const { messages: trace } = buildHistory(db, 100_000);
 
     // Count tool_result blocks — should be exactly 1 (duplicate pair skipped)
     let toolResultCount = 0;
@@ -322,6 +322,43 @@ describe("eidetic trace: trimmedCount", () => {
       .map(m => m.content as string)
       .join(" ");
     expect(textContent).toContain("I see the file");
+
+    db.close();
+  });
+
+  test("trimming does not orphan tool_result at front of trace", () => {
+    const { db, path } = tempDb();
+    cleanup.push(path);
+
+    // Create a tool_use/tool_result pair early in the trace
+    insertEvent(db, 1, "user", "text", "read a file");
+    insertEvent(db, 2, "assistant", "tool_use", '{"path": "big.txt"}', 0, { tool_id: "toolu_early", tool_name: "Read" });
+    insertEvent(db, 3, "user", "tool_result", "x".repeat(500), 0, { tool_use_id: "toolu_early" });
+    insertEvent(db, 4, "assistant", "text", "got it");
+
+    // Add many more messages so the tool pair gets trimmed from front
+    for (let i = 5; i <= 30; i += 2) {
+      insertEvent(db, i, "user", "text", `msg ${i} ${"z".repeat(200)}`);
+      insertEvent(db, i + 1, "assistant", "text", `reply ${i} ${"w".repeat(200)}`);
+    }
+
+    // Use a budget that trims the early tool pair
+    const { messages: trace } = buildHistory(db, 2000);
+
+    // The first content message (after preamble) must not be an orphaned tool_result
+    // Find first non-preamble user message
+    for (const msg of trace) {
+      if (msg.role === "user" && typeof msg.content !== "string") {
+        const hasToolResult = msg.content.some(b => b.type === "tool_result");
+        if (hasToolResult) {
+          // This tool_result must have a matching tool_use in the preceding assistant
+          const idx = trace.indexOf(msg);
+          expect(idx).toBeGreaterThan(0);
+          const prev = trace[idx - 1]!;
+          expect(prev.role).toBe("assistant");
+        }
+      }
+    }
 
     db.close();
   });

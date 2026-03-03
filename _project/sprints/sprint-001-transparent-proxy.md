@@ -74,7 +74,7 @@ Set up the per-project SQLite database with the Tier 1 schema from the PRD.
 - `PRAGMA journal_mode` returns WAL
 - `PRAGMA busy_timeout` returns 5000
 - Schema matches PRD exactly (raw_events + raw_events_fts + trigger + all indexes)
-- Project hash computed correctly from path (e.g., `/Users/gk/myproject` -> `-Users-gk-myproject`)
+- Project hash computed correctly from path (e.g., `/home/user/myproject` -> `-home-user-myproject`)
 - Database created automatically on first use
 - Idempotent — running schema init on an existing DB is safe (CREATE TABLE IF NOT EXISTS)
 
@@ -238,8 +238,8 @@ Extract the project path from the system prompt to determine which SQLite databa
 - Computes project hash: replace `/` with `-`, prepend `-`
 
 **Acceptance Criteria:**
-- Extracts `/Users/gk/myproject` from a real Claude Code system prompt
-- Returns correct hash: `-Users-gk-myproject`
+- Extracts `/home/user/myproject` from a real Claude Code system prompt
+- Returns correct hash: `-home-user-myproject`
 - Handles missing marker gracefully (returns a default/fallback)
 - Extracted on first request, cached for the session
 

@@ -7,10 +7,10 @@ import {
   executeTool,
   CONSOLIDATION_TOOLS,
   REFLECTION_TOOLS,
-} from "../src/dreamer.ts";
-import type { DreamResult } from "../src/types.ts";
+} from "../src/digester.ts";
+import type { DigestResult } from "../src/types.ts";
 import { openDb, initSchema } from "../src/db.ts";
-import { createMemory } from "../src/dream-tools.ts";
+import { createMemory } from "../src/digest-tools.ts";
 import { Database } from "bun:sqlite";
 
 function createTestDb(): Database {
@@ -19,7 +19,7 @@ function createTestDb(): Database {
   return db;
 }
 
-describe("dreamer", () => {
+describe("digester", () => {
   describe("parseToolCall", () => {
     test("parses clean JSON tool call", () => {
       const call = parseToolCall('{"tool":"query_memories","input":{"query":"auth"}}');
@@ -70,12 +70,6 @@ describe("dreamer", () => {
       expect(call?.input.source_ids).toEqual([3, 7]);
     });
 
-    test("parses prune_memory call", () => {
-      const call = parseToolCall('{"tool":"prune_memory","input":{"memory_id":12}}');
-      expect(call?.tool).toBe("prune_memory");
-      expect(call?.input.memory_id).toBe(12);
-    });
-
     test("extracts first tool call when model hallucinates multi-turn", () => {
       const output = `{"tool":"create_association","input":{"memory_a":"new_0","memory_b":17,"strength":0.9}}
 
@@ -93,7 +87,7 @@ describe("dreamer", () => {
 
   describe("tool sets", () => {
     test("CONSOLIDATION_TOOLS does not contain identity tools", () => {
-      expect(CONSOLIDATION_TOOLS.has("reflect_on_self")).toBe(false);
+      expect(CONSOLIDATION_TOOLS.has("update_self_concept")).toBe(false);
       expect(CONSOLIDATION_TOOLS.has("evolve_identity")).toBe(false);
       expect(CONSOLIDATION_TOOLS.has("evolve_relationship")).toBe(false);
       expect(CONSOLIDATION_TOOLS.has("mark_significance")).toBe(false);
@@ -104,7 +98,6 @@ describe("dreamer", () => {
       expect(REFLECTION_TOOLS.has("create_association")).toBe(false);
       expect(REFLECTION_TOOLS.has("update_memory")).toBe(false);
       expect(REFLECTION_TOOLS.has("merge_memories")).toBe(false);
-      expect(REFLECTION_TOOLS.has("prune_memory")).toBe(false);
       expect(REFLECTION_TOOLS.has("supersede_memory")).toBe(false);
       expect(REFLECTION_TOOLS.has("query_raw_events")).toBe(false);
       expect(REFLECTION_TOOLS.has("drain_retrieval_log")).toBe(false);
@@ -171,10 +164,10 @@ describe("dreamer", () => {
   });
 
   describe("executeTool type passthrough", () => {
-    function freshResult(): DreamResult {
+    function freshResult(): DigestResult {
       return {
         operationsRequested: 0, operationsExecuted: 0,
-        memoriesCreated: 0, memoriesMerged: 0, memoriesPruned: 0,
+        memoriesCreated: 0, memoriesMerged: 0,
         memoriesSuperseded: 0, associationsCreated: 0, reflectionOps: 0,
         errors: [], durationMs: 0, groupsConsolidated: 0, pressure: 0,
       };
@@ -186,7 +179,7 @@ describe("dreamer", () => {
         const result = freshResult();
         const newMemoryIds: number[] = [];
         const output = executeTool(db, { tool: "create_memory", input: {
-          content: "user's dog is Biscuit", salience: 0.7, type: "fact", source_event_ids: [],
+          content: "project started in March 2024", salience: 0.7, type: "fact", source_event_ids: [],
         }}, newMemoryIds, result) as { created_id: number };
 
         const mem = db.query("SELECT type FROM memories WHERE id = ?").get(output.created_id) as any;

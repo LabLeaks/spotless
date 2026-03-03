@@ -1,25 +1,25 @@
 /**
- * Background dream loop — adaptive scheduling based on consolidation pressure.
+ * Background digest loop — adaptive scheduling based on consolidation pressure.
  *
  * Replaces fixed setInterval with setTimeout-after-completion.
- * After each dream pass, reads pressure from DreamResult and schedules
+ * After each digest pass, reads pressure from DigestResult and schedules
  * the next pass accordingly. Per-agent state tracks timeouts and pending
  * escalations so no triggers are dropped.
  */
 
-import { runDreamPass } from "./dreamer.ts";
+import { runDigestPass } from "./digester.ts";
 import { getIntervalForPressure } from "./consolidation.ts";
-import type { DreamResult } from "./types.ts";
+import type { DigestResult } from "./types.ts";
 
-export interface DreamLoopConfig {
+export interface DigestLoopConfig {
   model?: string;
   maxRawEvents?: number;
 }
 
-export interface DreamLoop {
+export interface DigestLoop {
   start(getAgentNames: () => string[]): void;
   stop(): void;
-  triggerNow(agentName?: string): Promise<DreamResult[]>;
+  triggerNow(agentName?: string): Promise<DigestResult[]>;
   escalate(agentName: string): void;
   registerAgent(agentName: string): void;
 }
@@ -29,13 +29,13 @@ interface AgentState {
   pendingEscalate: boolean;
 }
 
-export function createDreamLoop(config?: DreamLoopConfig): DreamLoop {
+export function createDigestLoop(config?: DigestLoopConfig): DigestLoop {
   const model = config?.model ?? "haiku";
   const maxRawEvents = config?.maxRawEvents ?? 50;
 
   let getAgentNamesFn: (() => string[]) | null = null;
   let running = false;
-  const dreaming = new Set<string>();
+  const digesting = new Set<string>();
   const agentStates = new Map<string, AgentState>();
 
   function getOrCreateState(agentName: string): AgentState {
@@ -47,9 +47,9 @@ export function createDreamLoop(config?: DreamLoopConfig): DreamLoop {
     return state;
   }
 
-  async function dreamAgent(agentName: string): Promise<DreamResult> {
-    if (dreaming.has(agentName)) {
-      // Mark escalation pending — will be picked up after current dream finishes
+  async function digestAgent(agentName: string): Promise<DigestResult> {
+    if (digesting.has(agentName)) {
+      // Mark escalation pending — will be picked up after current digest finishes
       const state = getOrCreateState(agentName);
       state.pendingEscalate = true;
       return {
@@ -57,20 +57,19 @@ export function createDreamLoop(config?: DreamLoopConfig): DreamLoop {
         operationsExecuted: 0,
         memoriesCreated: 0,
         memoriesMerged: 0,
-        memoriesPruned: 0,
         memoriesSuperseded: 0,
         associationsCreated: 0,
         reflectionOps: 0,
-        errors: ["Already dreaming"],
+        errors: ["Already digesting"],
         durationMs: 0,
         groupsConsolidated: 0,
         pressure: 0,
       };
     }
 
-    dreaming.add(agentName);
+    digesting.add(agentName);
     try {
-      const result = await runDreamPass({
+      const result = await runDigestPass({
         agentName,
         model,
         maxRawEvents,
@@ -78,8 +77,8 @@ export function createDreamLoop(config?: DreamLoopConfig): DreamLoop {
 
       if (result.operationsExecuted > 0) {
         console.log(
-          `[dream] ${agentName}: ${result.memoriesCreated} created, ` +
-          `${result.memoriesMerged} merged, ${result.memoriesPruned} pruned, ` +
+          `[digest] ${agentName}: ${result.memoriesCreated} created, ` +
+          `${result.memoriesMerged} merged, ` +
           `${result.memoriesSuperseded} superseded, ` +
           `${result.associationsCreated} associations, ` +
           `${result.reflectionOps} reflection, ` +
@@ -89,12 +88,12 @@ export function createDreamLoop(config?: DreamLoopConfig): DreamLoop {
       }
 
       if (result.errors.length > 0) {
-        console.error(`[dream] ${agentName} errors:`, result.errors);
+        console.error(`[digest] ${agentName} errors:`, result.errors);
       }
 
       return result;
     } finally {
-      dreaming.delete(agentName);
+      digesting.delete(agentName);
     }
   }
 
@@ -111,11 +110,11 @@ export function createDreamLoop(config?: DreamLoopConfig): DreamLoop {
     const label = intervalMs === 0 ? "immediate" :
       intervalMs < 60000 ? `${intervalMs / 1000}s` :
       `${intervalMs / 60000}min`;
-    console.log(`[dream] ${agentName}: next pass in ${label}`);
+    console.log(`[digest] ${agentName}: next pass in ${label}`);
 
     const run = () => {
       state.timeout = null;
-      dreamAgent(agentName).then((result) => {
+      digestAgent(agentName).then((result) => {
         if (!running) return;
 
         // Check for pending escalation
@@ -128,7 +127,7 @@ export function createDreamLoop(config?: DreamLoopConfig): DreamLoop {
           scheduleAgent(agentName, nextInterval);
         }
       }).catch((err) => {
-        console.error(`[dream] ${agentName} error:`, err);
+        console.error(`[digest] ${agentName} error:`, err);
         if (running) {
           // On error, schedule a relaxed retry
           scheduleAgent(agentName, getIntervalForPressure(0));
@@ -150,7 +149,7 @@ export function createDreamLoop(config?: DreamLoopConfig): DreamLoop {
       running = true;
       getAgentNamesFn = getAgentNames;
 
-      console.log("[dream] Background dreaming started (adaptive scheduling)");
+      console.log("[digest] Background digesting started (adaptive scheduling)");
 
       // Initial sweep: schedule all known agents with relaxed interval
       const agents = getAgentNames();
@@ -169,20 +168,20 @@ export function createDreamLoop(config?: DreamLoopConfig): DreamLoop {
         state.pendingEscalate = false;
       }
       agentStates.clear();
-      console.log("[dream] Background dreaming stopped");
+      console.log("[digest] Background digesting stopped");
     },
 
     escalate(agentName: string): void {
       if (!running) return;
 
-      if (dreaming.has(agentName)) {
-        // Agent is currently dreaming — queue follow-up
+      if (digesting.has(agentName)) {
+        // Agent is currently digesting — queue follow-up
         const state = getOrCreateState(agentName);
         state.pendingEscalate = true;
-        console.log(`[dream] ${agentName}: escalation queued (currently dreaming)`);
+        console.log(`[digest] ${agentName}: escalation queued (currently digesting)`);
       } else {
         // Agent is idle — trigger immediately (cancels any scheduled timeout)
-        console.log(`[dream] ${agentName}: escalation — triggering immediate dream`);
+        console.log(`[digest] ${agentName}: escalation — triggering immediate digest`);
         scheduleAgent(agentName, 0);
       }
     },
@@ -191,20 +190,20 @@ export function createDreamLoop(config?: DreamLoopConfig): DreamLoop {
       if (!running) return;
       // No-op if agent already scheduled
       if (agentStates.has(agentName)) return;
-      console.log(`[dream] Registering new agent: ${agentName}`);
+      console.log(`[digest] Scheduling agent: ${agentName}`);
       scheduleAgent(agentName, getIntervalForPressure(0));
     },
 
-    async triggerNow(agentName?: string): Promise<DreamResult[]> {
+    async triggerNow(agentName?: string): Promise<DigestResult[]> {
       if (agentName) {
-        return [await dreamAgent(agentName)];
+        return [await digestAgent(agentName)];
       }
 
       if (!getAgentNamesFn) return [];
       const agents = getAgentNamesFn();
-      const results: DreamResult[] = [];
+      const results: DigestResult[] = [];
       for (const name of agents) {
-        results.push(await dreamAgent(name));
+        results.push(await digestAgent(name));
       }
       return results;
     },

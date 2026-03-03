@@ -1,26 +1,26 @@
 /**
- * Consolidation pressure, watermark, and fatigue signal.
+ * Consolidation pressure, watermark, and pressure signal.
  *
- * Pressure = unconsolidated tokens / eidetic budget.
+ * Pressure = unconsolidated tokens / history budget.
  * Watermark = highest message_group that has been consolidated.
- * Fatigue signal = XML tag injected when pressure is elevated.
+ * Pressure signal = XML tag injected when pressure is elevated.
  */
 
 import type { Database } from "bun:sqlite";
-import { EIDETIC_BUDGET } from "./tokens.ts";
+import { HISTORY_BUDGET } from "./tokens.ts";
 
 // --- Pressure thresholds ---
 
 export const PRESSURE_MODERATE = 0.6;
 export const PRESSURE_HIGH = 0.85;
 
-// --- Dream interval scheduling ---
+// --- Digest interval scheduling ---
 
 export const PRESSURE_ELEVATED = 0.3;
 
-export const DREAM_INTERVAL_RELAXED = 10 * 60 * 1000;    // 10min, pressure < 30%
-export const DREAM_INTERVAL_NORMAL = 3 * 60 * 1000;      // 3min, 30-60%
-export const DREAM_INTERVAL_AGGRESSIVE = 60 * 1000;       // 1min, 60-85%
+export const DIGEST_INTERVAL_RELAXED = 10 * 60 * 1000;    // 10min, pressure < 30%
+export const DIGEST_INTERVAL_NORMAL = 3 * 60 * 1000;      // 3min, 30-60%
+export const DIGEST_INTERVAL_AGGRESSIVE = 60 * 1000;       // 1min, 60-85%
 
 // --- Types ---
 
@@ -49,22 +49,22 @@ export function getPressureLevel(pressure: number): PressureLevel {
 
 export function getIntervalForPressure(pressure: number): number {
   if (pressure >= PRESSURE_HIGH) return 0;
-  if (pressure >= PRESSURE_MODERATE) return DREAM_INTERVAL_AGGRESSIVE;
-  if (pressure >= PRESSURE_ELEVATED) return DREAM_INTERVAL_NORMAL;
-  return DREAM_INTERVAL_RELAXED;
+  if (pressure >= PRESSURE_MODERATE) return DIGEST_INTERVAL_AGGRESSIVE;
+  if (pressure >= PRESSURE_ELEVATED) return DIGEST_INTERVAL_NORMAL;
+  return DIGEST_INTERVAL_RELAXED;
 }
 
-export function buildFatigueSignal(pressure: number, unconsolidatedTokens: number): string {
+export function buildPressureSignal(pressure: number, unconsolidatedTokens: number): string {
   const level = getPressureLevel(pressure);
   if (level === "none") return "";
 
   const approxTokens = Math.round(unconsolidatedTokens / 1000);
 
   if (level === "moderate") {
-    return `<memory-pressure level="moderate">You have approximately ${approxTokens}k tokens of unconsolidated experience. Your memory consolidation is falling behind the pace of conversation. This is not yet critical, but shorter exchanges or natural pauses help your dreaming process catch up.</memory-pressure>`;
+    return `<memory-pressure level="moderate">You have approximately ${approxTokens}k tokens of unconsolidated experience. Your memory consolidation is falling behind the pace of conversation. This is not yet critical, but shorter exchanges or natural pauses help your memory consolidation can catch up.</memory-pressure>`;
   }
 
-  return `<memory-pressure level="high">You have approximately ${approxTokens}k tokens of unconsolidated experience — your memory consolidation is critically behind. If the conversation continues at this pace, experiences may be lost before they can be consolidated. Please ask the human to slow down or take a break so your dreaming process can catch up.</memory-pressure>`;
+  return `<memory-pressure level="high">You have approximately ${approxTokens}k tokens of unconsolidated experience — your memory consolidation is critically behind. If the conversation continues at this pace, experiences may be lost before they can be consolidated. Please ask the human to slow down or take a break so your memory consolidation can catch up.</memory-pressure>`;
 }
 
 // --- DB queries ---
@@ -76,7 +76,7 @@ export function getWatermark(db: Database): number | null {
   return row?.wm ?? null;
 }
 
-export function getConsolidationPressure(db: Database, budget: number = EIDETIC_BUDGET): PressureResult {
+export function getConsolidationPressure(db: Database, budget: number = HISTORY_BUDGET): PressureResult {
   const row = db.query(
     `SELECT COALESCE(SUM(LENGTH(content)) / 4.0, 0) as tokens FROM raw_events
      WHERE consolidated = 0 AND is_subagent = 0 AND content_type != 'thinking'
@@ -88,7 +88,7 @@ export function getConsolidationPressure(db: Database, budget: number = EIDETIC_
   return { pressure, unconsolidatedTokens };
 }
 
-export function getConsolidationStatus(db: Database, budget: number = EIDETIC_BUDGET): ConsolidationStatus {
+export function getConsolidationStatus(db: Database, budget: number = HISTORY_BUDGET): ConsolidationStatus {
   const watermark = getWatermark(db);
   const { pressure, unconsolidatedTokens } = getConsolidationPressure(db, budget);
 

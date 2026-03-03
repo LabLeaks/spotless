@@ -1,13 +1,13 @@
 /**
- * Recall pipeline: FTS5 search + spreading activation + retrieval scoring.
+ * Recall pipeline: FTS5 search + graph traversal + retrieval scoring.
  *
- * Used by the proxy (pre-computation before hippocampus) and by hippocampus
+ * Used by the proxy (pre-computation before selector) and by selector
  * tool calls. Pure SQLite operations — no LLM calls.
  */
 
 import type { Database } from "bun:sqlite";
 import type { Memory } from "./types.ts";
-import { getAssociations } from "./dream-tools.ts";
+import { getAssociations } from "./digest-tools.ts";
 
 // --- Scoring ---
 
@@ -28,23 +28,23 @@ export function scoreMemory(memory: Memory, now: number): number {
   return ALPHA * recency + BETA * memory.salience;
 }
 
-// --- Spreading Activation ---
+// --- Graph Traversal ---
 
-export interface SpreadOpts {
+export interface TraversalOpts {
   maxNodes?: number;        // max visited nodes (default 50)
   minEdgeStrength?: number; // minimum association strength to follow (default 0.1)
   maxResults?: number;      // max memories returned (default 30)
 }
 
 /**
- * BFS spreading activation from seed memory IDs.
+ * BFS graph traversal from seed memory IDs.
  * Follows associations bidirectionally, collecting connected memories.
  * Returns scored memories sorted by score DESC.
  */
-export function spreadActivation(
+export function traverseGraph(
   db: Database,
   seedIds: number[],
-  opts?: SpreadOpts,
+  opts?: TraversalOpts,
 ): (Memory & { score: number })[] {
   const maxNodes = opts?.maxNodes ?? 50;
   const minEdgeStrength = opts?.minEdgeStrength ?? 0.1;
@@ -93,7 +93,7 @@ export function spreadActivation(
 
 // --- Main recall function ---
 
-export interface RecallOpts extends SpreadOpts {
+export interface RecallOpts extends TraversalOpts {
   // Future: additional filtering options
 }
 
@@ -133,7 +133,7 @@ export function recall(
 
   if (seedIds.length === 0) return [];
 
-  return spreadActivation(db, seedIds, opts);
+  return traverseGraph(db, seedIds, opts);
 }
 
 /**
@@ -157,7 +157,7 @@ export interface IdentityNode extends Memory {
 
 /**
  * Get all working-self memories (self, relationship) from the registry.
- * Returns the role alongside each memory so the hippocampus prompt can label them.
+ * Returns the role alongside each memory so the selector prompt can label them.
  */
 export function getIdentityNodes(db: Database): IdentityNode[] {
   return db.query(`

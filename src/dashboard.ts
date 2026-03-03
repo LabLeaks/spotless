@@ -9,7 +9,7 @@
 import type { Database } from "bun:sqlite";
 import { listAgents } from "./agent.ts";
 import { openReadonlyDb } from "./db.ts";
-import { queryMemories, getAssociations } from "./dream-tools.ts";
+import { queryMemories, getAssociations } from "./digest-tools.ts";
 import { getIdentityNodes } from "./recall.ts";
 import type { AgentContext, ProxyStats } from "./proxy.ts";
 import { getConsolidationStatus, getConsolidationPressure, getPressureLevel, getIntervalForPressure } from "./consolidation.ts";
@@ -73,21 +73,21 @@ export function handleDashboardRequest(
         return jsonResponse(apiAgentIdentity(db));
       }
 
-      if (sub === "dreams") {
+      if (sub === "digests") {
         const limit = url.searchParams.has("limit")
           ? parseInt(url.searchParams.get("limit")!, 10)
           : 50;
-        return jsonResponse(apiAgentDreams(db, limit));
+        return jsonResponse(apiAgentDigests(db, limit));
       }
 
-      if (sub === "hippo") {
+      if (sub === "selector") {
         const limit = url.searchParams.has("limit")
           ? parseInt(url.searchParams.get("limit")!, 10)
           : 50;
-        return jsonResponse(apiAgentHippo(db, limit));
+        return jsonResponse(apiAgentSelector(db, limit));
       }
 
-      if (sub === "eidetic") {
+      if (sub === "history") {
         const limit = url.searchParams.has("limit")
           ? parseInt(url.searchParams.get("limit")!, 10)
           : 200;
@@ -95,7 +95,7 @@ export function handleDashboardRequest(
           ? parseInt(url.searchParams.get("offset")!, 10)
           : 0;
         const q = url.searchParams.get("q") || undefined;
-        return jsonResponse(apiAgentEidetic(db, limit, offset, q));
+        return jsonResponse(apiAgentHistory(db, limit, offset, q));
       }
 
       if (sub === "consolidation") {
@@ -167,8 +167,8 @@ function apiAgents() {
   return agents.map(a => {
     let memoryCount = 0;
     let rawEventCount = 0;
-    let lastDream: number | null = null;
-    let lastHippo: number | null = null;
+    let lastDigest: number | null = null;
+    let lastSelector: number | null = null;
     let typeCounts: Record<string, number> = {};
     let pressure = 0;
     let pressureLevel: string = "none";
@@ -178,10 +178,10 @@ function apiAgents() {
       try {
         memoryCount = (db.query("SELECT COUNT(*) as c FROM memories WHERE archived_at IS NULL").get() as { c: number })?.c ?? 0;
         rawEventCount = (db.query("SELECT COUNT(*) as c FROM raw_events").get() as { c: number })?.c ?? 0;
-        const dreamRow = db.query("SELECT MAX(timestamp) as t FROM dream_passes").get() as { t: number | null } | null;
-        lastDream = dreamRow?.t ?? null;
-        const hippoRow = db.query("SELECT MAX(timestamp) as t FROM hippocampus_runs").get() as { t: number | null } | null;
-        lastHippo = hippoRow?.t ?? null;
+        const digestRow = db.query("SELECT MAX(timestamp) as t FROM digest_passes").get() as { t: number | null } | null;
+        lastDigest = digestRow?.t ?? null;
+        const selectorRow = db.query("SELECT MAX(timestamp) as t FROM selector_runs").get() as { t: number | null } | null;
+        lastSelector = selectorRow?.t ?? null;
         // Type breakdown (active memories only)
         try {
           const types = db.query(
@@ -211,8 +211,8 @@ function apiAgents() {
       sizeBytes: a.sizeBytes,
       memoryCount,
       rawEventCount,
-      lastDream,
-      lastHippo,
+      lastDigest,
+      lastSelector,
       typeCounts,
       pressure,
       pressureLevel,
@@ -257,15 +257,15 @@ function apiAgentIdentity(db: Database) {
   return { identity };
 }
 
-function apiAgentDreams(db: Database, limit: number) {
+function apiAgentDigests(db: Database, limit: number) {
   const rows = db.query(
-    "SELECT * FROM dream_passes ORDER BY timestamp DESC LIMIT ?"
+    "SELECT * FROM digest_passes ORDER BY timestamp DESC LIMIT ?"
   ).all(limit);
 
   // Summary stats
-  const totalRow = db.query("SELECT COUNT(*) as c FROM dream_passes").get() as { c: number };
+  const totalRow = db.query("SELECT COUNT(*) as c FROM digest_passes").get() as { c: number };
   const avgRow = db.query(
-    "SELECT AVG(duration_ms) as avg_ms, SUM(memories_created) as total_created FROM dream_passes"
+    "SELECT AVG(duration_ms) as avg_ms, SUM(memories_created) as total_created FROM digest_passes"
   ).get() as { avg_ms: number | null; total_created: number | null };
 
   return {
@@ -278,14 +278,14 @@ function apiAgentDreams(db: Database, limit: number) {
   };
 }
 
-function apiAgentHippo(db: Database, limit: number) {
+function apiAgentSelector(db: Database, limit: number) {
   const rows = db.query(
-    "SELECT * FROM hippocampus_runs ORDER BY timestamp DESC LIMIT ?"
+    "SELECT * FROM selector_runs ORDER BY timestamp DESC LIMIT ?"
   ).all(limit);
 
-  const totalRow = db.query("SELECT COUNT(*) as c FROM hippocampus_runs").get() as { c: number };
+  const totalRow = db.query("SELECT COUNT(*) as c FROM selector_runs").get() as { c: number };
   const avgRow = db.query(
-    "SELECT AVG(duration_ms) as avg_ms, AVG(memory_count) as avg_count FROM hippocampus_runs"
+    "SELECT AVG(duration_ms) as avg_ms, AVG(memory_count) as avg_count FROM selector_runs"
   ).get() as { avg_ms: number | null; avg_count: number | null };
 
   return {
@@ -318,7 +318,7 @@ function apiAgentConsolidation(db: Database) {
   };
 }
 
-function apiAgentEidetic(db: Database, limit: number, offset: number, query?: string) {
+function apiAgentHistory(db: Database, limit: number, offset: number, query?: string) {
   // Total count for pagination
   const totalRow = db.query("SELECT COUNT(*) as c FROM raw_events").get() as { c: number };
 
@@ -427,8 +427,8 @@ function renderIndexPage(stats: ProxyStats): string {
               <span>\${formatBytes(a.sizeBytes)}</span>
             </div>
             <div class="agent-meta">
-              <span>Last dream: \${a.lastDream ? timeAgo(a.lastDream) : 'never'}</span>
-              <span>Last hippo: \${a.lastHippo ? timeAgo(a.lastHippo) : 'never'}</span>
+              <span>Last digest: \${a.lastDigest ? timeAgo(a.lastDigest) : 'never'}</span>
+              <span>Last selector: \${a.lastSelector ? timeAgo(a.lastSelector) : 'never'}</span>
             </div>
             \${typeBreakdown ? '<div class="agent-types">' + typeBreakdown + '</div>' : ''}
             \${a.pressure > 0 ? '<div class="agent-pressure pressure-' + a.pressureLevel + '"><span class="pressure-dot"></span> Pressure: ' + (a.pressure * 100).toFixed(0) + '% (' + a.pressureLevel + ')</div>' : ''}
@@ -473,10 +473,10 @@ function renderAgentPage(agentName: string): string {
 
   <nav class="tabs">
     <button class="tab active" data-tab="memories">Memories</button>
-    <button class="tab" data-tab="eidetic">Eidetic</button>
+    <button class="tab" data-tab="history">History</button>
     <button class="tab" data-tab="identity">Identity</button>
-    <button class="tab" data-tab="dreams">Dreams</button>
-    <button class="tab" data-tab="hippo">Hippocampus</button>
+    <button class="tab" data-tab="digests">Digests</button>
+    <button class="tab" data-tab="selector">Selector</button>
     <button class="tab" data-tab="health">Health</button>
   </nav>
 
@@ -498,20 +498,20 @@ function renderAgentPage(agentName: string): string {
     <div id="memories-results"></div>
   </section>
 
-  <!-- Eidetic Tab -->
-  <section id="tab-eidetic" class="tab-content">
-    <div id="eidetic-summary"></div>
+  <!-- History Tab -->
+  <section id="tab-history" class="tab-content">
+    <div id="history-summary"></div>
     <div class="controls">
-      <input type="text" id="eidetic-search" placeholder="Search raw events (FTS5)..." />
-      <button id="eidetic-search-btn">Search</button>
-      <button id="eidetic-clear-btn">Show all</button>
-      <span class="eidetic-nav">
-        <button id="eidetic-newer">&laquo; Newer</button>
-        <span id="eidetic-page-info"></span>
-        <button id="eidetic-older">Older &raquo;</button>
+      <input type="text" id="history-search" placeholder="Search raw events (FTS5)..." />
+      <button id="history-search-btn">Search</button>
+      <button id="history-clear-btn">Show all</button>
+      <span class="history-nav">
+        <button id="history-newer">&laquo; Newer</button>
+        <span id="history-page-info"></span>
+        <button id="history-older">Older &raquo;</button>
       </span>
     </div>
-    <div id="eidetic-results"></div>
+    <div id="history-results"></div>
   </section>
 
   <!-- Identity Tab -->
@@ -521,16 +521,16 @@ function renderAgentPage(agentName: string): string {
     </div>
   </section>
 
-  <!-- Dreams Tab -->
-  <section id="tab-dreams" class="tab-content">
-    <div id="dreams-summary"></div>
-    <div id="dreams-table"></div>
+  <!-- Digests Tab -->
+  <section id="tab-digests" class="tab-content">
+    <div id="digests-summary"></div>
+    <div id="digests-table"></div>
   </section>
 
-  <!-- Hippocampus Tab -->
-  <section id="tab-hippo" class="tab-content">
-    <div id="hippo-summary"></div>
-    <div id="hippo-table"></div>
+  <!-- Selector Tab -->
+  <section id="tab-selector" class="tab-content">
+    <div id="selector-summary"></div>
+    <div id="selector-table"></div>
   </section>
 
   <!-- Health Tab -->
@@ -550,10 +550,10 @@ function renderAgentPage(agentName: string): string {
         document.querySelectorAll('.tab-content').forEach(s => s.classList.remove('active'));
         btn.classList.add('active');
         document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-        if (btn.dataset.tab === 'eidetic') loadEidetic();
+        if (btn.dataset.tab === 'history') loadHistory();
         if (btn.dataset.tab === 'identity') loadIdentity();
-        if (btn.dataset.tab === 'dreams') loadDreams();
-        if (btn.dataset.tab === 'hippo') loadHippo();
+        if (btn.dataset.tab === 'digests') loadDigests();
+        if (btn.dataset.tab === 'selector') loadSelector();
         if (btn.dataset.tab === 'health') loadHealth();
       });
     });
@@ -664,56 +664,56 @@ function renderAgentPage(agentName: string): string {
     // Load all memories on page load
     loadMemories();
 
-    // --- Eidetic ---
-    let eideticOffset = 0;
-    const eideticLimit = 200;
-    let eideticTotal = 0;
-    let eideticQuery = '';
+    // --- History ---
+    let historyOffset = 0;
+    const historyLimit = 200;
+    let historyTotal = 0;
+    let historyQuery = '';
 
-    const eideticSearch = document.getElementById('eidetic-search');
-    const eideticSearchBtn = document.getElementById('eidetic-search-btn');
-    const eideticClearBtn = document.getElementById('eidetic-clear-btn');
-    const eideticNewer = document.getElementById('eidetic-newer');
-    const eideticOlder = document.getElementById('eidetic-older');
+    const historySearch = document.getElementById('history-search');
+    const historySearchBtn = document.getElementById('history-search-btn');
+    const historyClearBtn = document.getElementById('history-clear-btn');
+    const historyNewer = document.getElementById('history-newer');
+    const historyOlder = document.getElementById('history-older');
 
-    eideticSearchBtn.addEventListener('click', () => {
-      eideticQuery = eideticSearch.value.trim();
-      eideticOffset = 0;
-      loadEidetic();
+    historySearchBtn.addEventListener('click', () => {
+      historyQuery = historySearch.value.trim();
+      historyOffset = 0;
+      loadHistory();
     });
-    eideticSearch.addEventListener('keydown', e => {
-      if (e.key === 'Enter') { eideticQuery = eideticSearch.value.trim(); eideticOffset = 0; loadEidetic(); }
+    historySearch.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { historyQuery = historySearch.value.trim(); historyOffset = 0; loadHistory(); }
     });
-    eideticClearBtn.addEventListener('click', () => {
-      eideticSearch.value = '';
-      eideticQuery = '';
-      eideticOffset = 0;
-      loadEidetic();
+    historyClearBtn.addEventListener('click', () => {
+      historySearch.value = '';
+      historyQuery = '';
+      historyOffset = 0;
+      loadHistory();
     });
-    eideticNewer.addEventListener('click', () => {
-      eideticOffset = Math.max(0, eideticOffset - eideticLimit);
-      loadEidetic();
+    historyNewer.addEventListener('click', () => {
+      historyOffset = Math.max(0, historyOffset - historyLimit);
+      loadHistory();
     });
-    eideticOlder.addEventListener('click', () => {
-      if (eideticOffset + eideticLimit < eideticTotal) {
-        eideticOffset += eideticLimit;
-        loadEidetic();
+    historyOlder.addEventListener('click', () => {
+      if (historyOffset + historyLimit < historyTotal) {
+        historyOffset += historyLimit;
+        loadHistory();
       }
     });
 
-    function loadEidetic() {
+    function loadHistory() {
       const params = new URLSearchParams();
-      params.set('limit', String(eideticLimit));
-      params.set('offset', String(eideticOffset));
-      if (eideticQuery) params.set('q', eideticQuery);
+      params.set('limit', String(historyLimit));
+      params.set('offset', String(historyOffset));
+      if (historyQuery) params.set('q', historyQuery);
 
-      fetch('/_dashboard/api/agent/' + AGENT + '/eidetic?' + params)
+      fetch('/_dashboard/api/agent/' + AGENT + '/history?' + params)
         .then(r => r.json())
         .then(data => {
-          eideticTotal = data.total;
+          historyTotal = data.total;
 
           // Summary
-          const summary = document.getElementById('eidetic-summary');
+          const summary = document.getElementById('history-summary');
           const tc = data.typeCounts || {};
           summary.innerHTML = '<div class="summary-bar">' +
             '<span>Total events: ' + data.total + '</span>' +
@@ -725,14 +725,14 @@ function renderAgentPage(agentName: string): string {
             '</div>';
 
           // Pagination info
-          const pageInfo = document.getElementById('eidetic-page-info');
-          const showing = Math.min(eideticOffset + eideticLimit, data.total);
-          pageInfo.textContent = (eideticOffset + 1) + '-' + showing + ' of ' + data.total;
-          eideticNewer.disabled = eideticOffset === 0;
-          eideticOlder.disabled = eideticOffset + eideticLimit >= data.total;
+          const pageInfo = document.getElementById('history-page-info');
+          const showing = Math.min(historyOffset + historyLimit, data.total);
+          pageInfo.textContent = (historyOffset + 1) + '-' + showing + ' of ' + data.total;
+          historyNewer.disabled = historyOffset === 0;
+          historyOlder.disabled = historyOffset + historyLimit >= data.total;
 
           // Table
-          const container = document.getElementById('eidetic-results');
+          const container = document.getElementById('history-results');
           if (!data.events || data.events.length === 0) {
             container.innerHTML = '<p class="empty">No raw events found.</p>';
             return;
@@ -758,11 +758,11 @@ function renderAgentPage(agentName: string): string {
                 <td>\${e.message_group}</td>
                 <td class="\${roleClass}">\${e.role}</td>
                 <td class="\${typeClass}">\${e.content_type}</td>
-                <td class="content-cell eidetic-content">\${escapeHtml(truncate(e.content, 150))}</td>
+                <td class="content-cell history-content">\${escapeHtml(truncate(e.content, 150))}</td>
                 <td>\${subBadge}</td>
                 <td>\${formatTime(e.timestamp)}</td>
               </tr>
-              <tr class="eidetic-detail" id="eidetic-detail-\${e.id}" style="display:none">
+              <tr class="history-detail" id="history-detail-\${e.id}" style="display:none">
                 <td colspan="7"><div class="detail-content"><pre>\${escapeHtml(e.content)}</pre></div></td>
               </tr>
             \`;
@@ -774,7 +774,7 @@ function renderAgentPage(agentName: string): string {
           // Click to expand
           container.querySelectorAll('tr[data-eid]').forEach(row => {
             row.addEventListener('click', () => {
-              const detail = document.getElementById('eidetic-detail-' + row.dataset.eid);
+              const detail = document.getElementById('history-detail-' + row.dataset.eid);
               detail.style.display = detail.style.display === 'none' ? 'table-row' : 'none';
             });
           });
@@ -810,12 +810,12 @@ function renderAgentPage(agentName: string): string {
         });
     }
 
-    // --- Dreams ---
-    function loadDreams() {
-      fetch('/_dashboard/api/agent/' + AGENT + '/dreams')
+    // --- Digests ---
+    function loadDigests() {
+      fetch('/_dashboard/api/agent/' + AGENT + '/digests')
         .then(r => r.json())
         .then(data => {
-          const summary = document.getElementById('dreams-summary');
+          const summary = document.getElementById('digests-summary');
           const s = data.summary;
           summary.innerHTML = '<div class="summary-bar">' +
             '<span>Total passes: ' + s.totalPasses + '</span>' +
@@ -823,9 +823,9 @@ function renderAgentPage(agentName: string): string {
             '<span>Total memories created: ' + s.totalMemoriesCreated + '</span>' +
             '</div>';
 
-          const table = document.getElementById('dreams-table');
+          const table = document.getElementById('digests-table');
           if (!data.passes || data.passes.length === 0) {
-            table.innerHTML = '<p class="empty">No dream passes yet.</p>';
+            table.innerHTML = '<p class="empty">No digest passes yet.</p>';
             return;
           }
           table.innerHTML = '<table>' +
@@ -846,12 +846,12 @@ function renderAgentPage(agentName: string): string {
         });
     }
 
-    // --- Hippocampus ---
-    function loadHippo() {
-      fetch('/_dashboard/api/agent/' + AGENT + '/hippo')
+    // --- Selector ---
+    function loadSelector() {
+      fetch('/_dashboard/api/agent/' + AGENT + '/selector')
         .then(r => r.json())
         .then(data => {
-          const summary = document.getElementById('hippo-summary');
+          const summary = document.getElementById('selector-summary');
           const s = data.summary;
           summary.innerHTML = '<div class="summary-bar">' +
             '<span>Total runs: ' + s.totalRuns + '</span>' +
@@ -859,9 +859,9 @@ function renderAgentPage(agentName: string): string {
             '<span>Avg memories: ' + (s.avgMemoryCount !== null ? s.avgMemoryCount : 'n/a') + '</span>' +
             '</div>';
 
-          const table = document.getElementById('hippo-table');
+          const table = document.getElementById('selector-table');
           if (!data.runs || data.runs.length === 0) {
-            table.innerHTML = '<p class="empty">No hippocampus runs yet.</p>';
+            table.innerHTML = '<p class="empty">No selector runs yet.</p>';
             return;
           }
           table.innerHTML = '<table>' +
@@ -905,7 +905,7 @@ function renderAgentPage(agentName: string): string {
           html += '<div class="stat-row"><span class="stat-label">Unconsolidated tokens</span><span class="stat-value">' + Math.round(data.unconsolidatedTokens / 1000) + 'k</span></div>';
           html += '<div class="stat-row"><span class="stat-label">Groups consolidated</span><span class="stat-value">' + data.consolidatedGroups + ' / ' + data.totalGroups + '</span></div>';
           html += '<div class="stat-row"><span class="stat-label">Unconsolidated groups</span><span class="stat-value">' + data.unconsolidatedGroups + '</span></div>';
-          html += '<div class="stat-row"><span class="stat-label">Dream interval</span><span class="stat-value">' + data.expectedInterval + '</span></div>';
+          html += '<div class="stat-row"><span class="stat-label">Digest interval</span><span class="stat-value">' + data.expectedInterval + '</span></div>';
           html += '</div>';
           html += '</div>';
 
@@ -1194,9 +1194,9 @@ const STYLES = `<style>
     font-size: 0.8em;
   }
 
-  .eidetic-content { cursor: pointer; }
+  .history-content { cursor: pointer; }
 
-  .eidetic-nav {
+  .history-nav {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -1205,7 +1205,7 @@ const STYLES = `<style>
     color: #8b949e;
   }
 
-  .eidetic-nav button:disabled { opacity: 0.4; cursor: default; }
+  .history-nav button:disabled { opacity: 0.4; cursor: default; }
 
   .type-badge {
     display: inline-block;

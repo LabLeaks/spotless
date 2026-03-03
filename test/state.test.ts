@@ -74,6 +74,51 @@ describe("proxy state", () => {
     ).toBe(false);
   });
 
+  test("appendToolResultToChain skips duplicate tool_use_ids on retry", () => {
+    const state = createProxyState(0);
+    const toolResult = {
+      role: "user" as const,
+      content: [{ type: "tool_result" as const, tool_use_id: "toolu_abc123", content: "result" }],
+    };
+    // First append — should succeed
+    appendToolResultToChain(state, toolResult);
+    expect(state.toolLoopChain.length).toBe(1);
+
+    // Retry with same tool_use_id — should be skipped
+    appendToolResultToChain(state, toolResult);
+    expect(state.toolLoopChain.length).toBe(1);
+  });
+
+  test("appendToolResultToChain allows different tool_use_ids", () => {
+    const state = createProxyState(0);
+    appendToolResultToChain(state, {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "toolu_first", content: "r1" }],
+    });
+    appendToolResultToChain(state, {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "toolu_second", content: "r2" }],
+    });
+    expect(state.toolLoopChain.length).toBe(2);
+  });
+
+  test("appendToolResultToChain skips when all IDs in multi-result are duplicates", () => {
+    const state = createProxyState(0);
+    const multiResult = {
+      role: "user" as const,
+      content: [
+        { type: "tool_result" as const, tool_use_id: "toolu_a", content: "r1" },
+        { type: "tool_result" as const, tool_use_id: "toolu_b", content: "r2" },
+      ],
+    };
+    appendToolResultToChain(state, multiResult);
+    expect(state.toolLoopChain.length).toBe(1);
+
+    // Retry — same IDs
+    appendToolResultToChain(state, multiResult);
+    expect(state.toolLoopChain.length).toBe(1);
+  });
+
   test("resetState clears everything", () => {
     const state = createProxyState(10);
     state.cachedBase = [{ role: "user", content: "something" }];

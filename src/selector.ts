@@ -1,7 +1,7 @@
 /**
- * Hippocampus orchestrator.
+ * Selector orchestrator.
  *
- * Spawns `claude -p --model haiku` with the hippocampus prompt,
+ * Spawns `claude -p --model haiku` with the selector prompt,
  * parses the output for memory IDs. Single-shot v1 — no tool-use loop.
  *
  * Never throws. All errors caught, logged, return empty result.
@@ -10,10 +10,10 @@
 import type { Database } from "bun:sqlite";
 import type { Memory } from "./types.ts";
 import { recall, getIdentityNodes } from "./recall.ts";
-import { buildHippoPrompt, type HippoContext, type ScoredMemory } from "./hippo-prompt.ts";
-import { queryRawEvents } from "./dream-tools.ts";
+import { buildSelectorPrompt, type SelectorContext, type ScoredMemory } from "./selector-prompt.ts";
+import { queryRawEvents, getIdentityFacts } from "./digest-tools.ts";
 
-export interface HippoConfig {
+export interface SelectorConfig {
   db: Database;
   userMessage: string;
   systemPrompt?: string;
@@ -21,18 +21,18 @@ export interface HippoConfig {
   timeoutMs?: number;
 }
 
-export interface HippoResult {
+export interface SelectorResult {
   memoryIds: number[];
 }
 
-const EMPTY_RESULT: HippoResult = { memoryIds: [] };
+const EMPTY_RESULT: SelectorResult = { memoryIds: [] };
 
 /**
- * Run the hippocampus: recall → build prompt → spawn claude → parse IDs.
+ * Run the selector: recall → build prompt → spawn claude → parse IDs.
  *
  * Never throws — returns empty result on any failure.
  */
-export async function runHippocampus(config: HippoConfig): Promise<HippoResult> {
+export async function runSelector(config: SelectorConfig): Promise<SelectorResult> {
   try {
     const { db, userMessage } = config;
 
@@ -42,12 +42,17 @@ export async function runHippocampus(config: HippoConfig): Promise<HippoResult> 
     // 2. Get identity nodes (working self: self, relationship)
     const identityNodes = getIdentityNodes(db);
 
-    // 3. If no recall results and no identity nodes, nothing to do
-    if (preComputed.length === 0 && identityNodes.length === 0) {
+    // 3. Get identity facts for contextual selection
+    const selfFacts = getIdentityFacts(db, "self");
+    const relFacts = getIdentityFacts(db, "relationship");
+    const identityFactIds = new Set([...selfFacts, ...relFacts].map(f => f.id));
+
+    // 4. If no recall results, no identity nodes, and no identity facts, nothing to do
+    if (preComputed.length === 0 && identityNodes.length === 0 && identityFactIds.size === 0) {
       return EMPTY_RESULT;
     }
 
-    // 4. Query recent raw events (last 5 groups as summary)
+    // 5. Query recent raw events (last 5 groups as summary)
     const recentGroups = queryRawEvents(db, { limit: 5, newestFirst: true });
     let recentRawSummary: string | null = null;
     if (recentGroups.length > 0) {
@@ -64,51 +69,73 @@ export async function runHippocampus(config: HippoConfig): Promise<HippoResult> 
       recentRawSummary = lines.join("\n");
     }
 
-    // 5. Extract project identity
+    // 6. Extract project identity
     const projectIdentity = config.systemPrompt
       ? extractProjectIdentity(config.systemPrompt)
       : null;
 
-    // 6. Ensure all identity nodes are in recall results (dedup by ID)
+    // 7. Ensure all identity nodes are in recall results (dedup by ID)
     const recallWithIdentity: ScoredMemory[] = [...preComputed];
+    const seenIds = new Set(recallWithIdentity.map(m => m.id));
+
     for (const node of identityNodes) {
-      if (!recallWithIdentity.some(m => m.id === node.id)) {
+      if (!seenIds.has(node.id)) {
         recallWithIdentity.unshift({ ...node, score: 999 });
+        seenIds.add(node.id);
       }
     }
 
-    // 7. Build prompt
-    const ctx: HippoContext = {
+    // 8. Merge identity facts into recall at score 100 (below anchors at 999)
+    for (const fact of [...selfFacts, ...relFacts]) {
+      if (!seenIds.has(fact.id)) {
+        recallWithIdentity.push({
+          id: fact.id,
+          content: fact.content,
+          salience: fact.salience,
+          created_at: fact.created_at,
+          last_accessed: fact.created_at,
+          access_count: 0,
+          type: "fact",
+          archived_at: null,
+          score: 100,
+        });
+        seenIds.add(fact.id);
+      }
+    }
+
+    // 9. Build prompt
+    const ctx: SelectorContext = {
       userMessage,
       projectIdentity,
       preComputedRecall: recallWithIdentity,
       identityNodes,
+      identityFactIds,
       recentRawSummary,
     };
-    const prompt = buildHippoPrompt(ctx);
+    const prompt = buildSelectorPrompt(ctx);
 
-    // 8. Spawn claude
+    // 10. Spawn claude
     const model = config.model ?? "haiku";
-    const timeoutMs = config.timeoutMs ?? 15_000;
+    const timeoutMs = config.timeoutMs ?? 45_000;
     const output = await spawnClaudeWithTimeout(prompt, model, timeoutMs);
 
     if (!output) return EMPTY_RESULT;
 
-    // 9. Parse memory IDs
+    // 11. Parse memory IDs
     const ids = parseMemoryIds(output);
     if (ids.length === 0) return EMPTY_RESULT;
 
-    // 10. Sort chronologically
+    // 12. Sort chronologically
     const sorted = sortByCreatedAt(db, ids);
     return { memoryIds: sorted };
   } catch (err) {
-    console.error("[hippo] Error:", err);
+    console.error("[selector] Error:", err);
     return EMPTY_RESULT;
   }
 }
 
 /**
- * Parse memory IDs from hippocampus output.
+ * Parse memory IDs from selector output.
  * Handles: clean JSON, fenced JSON, embedded JSON in prose.
  */
 export function parseMemoryIds(output: string): number[] {
@@ -205,8 +232,8 @@ async function spawnClaudeWithTimeout(
         ]);
         const exitCode = await proc.exited;
         if (exitCode !== 0) {
-          console.error(`[hippo] claude exited with code ${exitCode}`);
-          if (stderr) console.error(`[hippo] stderr: ${stderr.slice(0, 300)}`);
+          console.error(`[selector] claude exited with code ${exitCode}`);
+          if (stderr) console.error(`[selector] stderr: ${stderr.slice(0, 300)}`);
           return null;
         }
         return stdout.trim();
@@ -214,7 +241,7 @@ async function spawnClaudeWithTimeout(
       new Promise<null>((resolve) => {
         setTimeout(() => {
           try { proc.kill(); } catch { /* already exited */ }
-          console.warn(`[hippo] Timeout after ${timeoutMs}ms`);
+          console.warn(`[selector] Timeout after ${timeoutMs}ms`);
           resolve(null);
         }, timeoutMs);
       }),
@@ -222,7 +249,7 @@ async function spawnClaudeWithTimeout(
 
     return result;
   } catch (err) {
-    console.error("[hippo] Failed to spawn claude:", err);
+    console.error("[selector] Failed to spawn claude:", err);
     return null;
   }
 }

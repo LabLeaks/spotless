@@ -1,15 +1,15 @@
 /**
- * Dream quality evaluation test.
+ * Digest quality evaluation test.
  *
  * Gated on SPOTLESS_EVAL env var. Seeds Tier 1 with known conversation,
- * runs a dream pass, then uses claude -p as evaluator with a rubric.
+ * runs a digest pass, then uses claude -p as evaluator with a rubric.
  */
 
 import { test, expect, describe } from "bun:test";
 import { Database } from "bun:sqlite";
 import { openDb, initSchema } from "../src/db.ts";
-import { runDreamPass } from "../src/dreamer.ts";
-import { queryMemories } from "../src/dream-tools.ts";
+import { runDigestPass } from "../src/digester.ts";
+import { queryMemories } from "../src/digest-tools.ts";
 import { getIdentityNodes } from "../src/recall.ts";
 import { getAgentDbPath } from "../src/agent.ts";
 import { rmSync } from "node:fs";
@@ -18,13 +18,13 @@ import { homedir } from "node:os";
 
 const EVAL = !!process.env.SPOTLESS_EVAL;
 
-describe.skipIf(!EVAL)("dream-eval", () => {
+describe.skipIf(!EVAL)("digest-eval", () => {
   // Use a unique eval agent name in the real ~/.spotless/agents/ dir
   // (getAgentDbPath resolves from homedir at import time, can't be overridden)
   const agentName = `eval-${Date.now()}`;
   const agentDir = join(homedir(), ".spotless", "agents", agentName);
 
-  test("dream produces quality memories from seeded conversation", async () => {
+  test("digest produces quality memories from seeded conversation", async () => {
     // getAgentDbPath creates the directory and returns the DB path
     const dbPath = getAgentDbPath(agentName);
     const db = openDb(dbPath);
@@ -35,14 +35,14 @@ describe.skipIf(!EVAL)("dream-eval", () => {
     db.close();
 
     try {
-      // Run the dream pass against the seeded agent
-      const result = await runDreamPass({
+      // Run the digest pass against the seeded agent
+      const result = await runDigestPass({
         agentName,
         model: "haiku",
         maxRawEvents: 50,
       });
 
-      console.log("[eval] Dream result:", JSON.stringify(result, null, 2));
+      console.log("[eval] Digest result:", JSON.stringify(result, null, 2));
 
       // Basic sanity: should have created some memories
       expect(result.memoriesCreated).toBeGreaterThan(0);
@@ -79,10 +79,10 @@ describe.skipIf(!EVAL)("dream-eval", () => {
       // Clean up the eval agent
       try { rmSync(agentDir, { recursive: true, force: true }); } catch {}
     }
-  }, 300_000); // 5 minute timeout for LLM calls (dream pass + evaluator)
+  }, 300_000); // 5 minute timeout for LLM calls (digest pass + evaluator)
 });
 
-describe.skipIf(!EVAL)("dream-eval-identity", () => {
+describe.skipIf(!EVAL)("digest-eval-identity", () => {
   const agentName = `eval-id-${Date.now()}`;
   const agentDir = join(homedir(), ".spotless", "agents", agentName);
 
@@ -96,13 +96,13 @@ describe.skipIf(!EVAL)("dream-eval-identity", () => {
     db.close();
 
     try {
-      const result = await runDreamPass({
+      const result = await runDigestPass({
         agentName,
         model: "haiku",
         maxRawEvents: 50,
       });
 
-      console.log("[eval-id] Dream result:", JSON.stringify(result, null, 2));
+      console.log("[eval-id] Digest result:", JSON.stringify(result, null, 2));
 
       // Consolidation should have created factual memories
       expect(result.memoriesCreated).toBeGreaterThan(0);

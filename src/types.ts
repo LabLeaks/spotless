@@ -124,7 +124,7 @@ export interface RawEvent {
   metadata: string | null; // JSON string
 }
 
-// --- Tier 2: Engram Network types ---
+// --- Tier 2: Memory Graph types ---
 
 export type MemoryType = "episodic" | "fact";
 
@@ -147,69 +147,62 @@ export interface Association {
   last_reinforced: number;
 }
 
-// --- Dream Operations (discriminated union) ---
+// --- Digest Operations (discriminated union) ---
 
-export interface DreamOpCreateMemory {
+export interface DigestOpCreateMemory {
   op: "create_memory";
   content: string;
   salience: number;
   source_event_ids: number[];
 }
 
-export interface DreamOpCreateAssociation {
+export interface DigestOpCreateAssociation {
   op: "create_association";
   memory_a: number;
   memory_b: number;
   strength: number;
 }
 
-export interface DreamOpUpdateMemory {
+export interface DigestOpUpdateMemory {
   op: "update_memory";
   memory_id: number;
   content?: string;
   salience?: number;
 }
 
-export interface DreamOpMergeMemories {
+export interface DigestOpMergeMemories {
   op: "merge_memories";
   source_ids: number[];
   content: string;
   salience: number;
 }
 
-export interface DreamOpStrengthenAssociation {
+export interface DigestOpStrengthenAssociation {
   op: "strengthen_association";
   memory_a: number;
   memory_b: number;
   strength: number;
 }
 
-export interface DreamOpPruneMemory {
-  op: "prune_memory";
-  memory_id: number;
-}
-
-export interface DreamOpDone {
+export interface DigestOpDone {
   op: "done";
 }
 
-export type DreamOperation =
-  | DreamOpCreateMemory
-  | DreamOpCreateAssociation
-  | DreamOpUpdateMemory
-  | DreamOpMergeMemories
-  | DreamOpStrengthenAssociation
-  | DreamOpPruneMemory
-  | DreamOpDone;
+export type DigestOperation =
+  | DigestOpCreateMemory
+  | DigestOpCreateAssociation
+  | DigestOpUpdateMemory
+  | DigestOpMergeMemories
+  | DigestOpStrengthenAssociation
+  | DigestOpDone;
 
-// --- Dream Result ---
+// --- Digest Result ---
 
-export interface DreamResult {
+export interface DigestResult {
   operationsRequested: number;
   operationsExecuted: number;
   memoriesCreated: number;
   memoriesMerged: number;
-  memoriesPruned: number;
   memoriesSuperseded: number;
   associationsCreated: number;
   reflectionOps: number;
@@ -219,9 +212,9 @@ export interface DreamResult {
   pressure: number;
 }
 
-// --- Hippocampus Result ---
+// --- Selector Result ---
 
-export interface HippoResult {
+export interface SelectorResult {
   memoryIds: number[];
 }
 
@@ -233,8 +226,8 @@ export interface ProxyState {
   lastStopReason: string | null;
   currentMessageGroup: number;
   agentName: string | null;
-  lastHippocampusResult: number[] | null;
-  hippocampusRunning: Promise<HippoResult> | null;
+  lastSelectorResult: number[] | null;
+  selectorRunning: Promise<SelectorResult> | null;
   lastSystemPrompt: string | null;
-  hippoGeneration: number;
+  selectorGeneration: number;
 }

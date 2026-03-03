@@ -39,36 +39,36 @@ describe("diagnostic schema", () => {
     cleanup.length = 0;
   });
 
-  test("dream_passes table created by initSchema", () => {
+  test("digest_passes table created by initSchema", () => {
     const { db, path } = tempDb();
     cleanup.push(path);
 
     const tables = db.query(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='dream_passes'"
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='digest_passes'"
     ).all() as { name: string }[];
     expect(tables.length).toBe(1);
 
     db.close();
   });
 
-  test("hippocampus_runs table created by initSchema", () => {
+  test("selector_runs table created by initSchema", () => {
     const { db, path } = tempDb();
     cleanup.push(path);
 
     const tables = db.query(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='hippocampus_runs'"
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='selector_runs'"
     ).all() as { name: string }[];
     expect(tables.length).toBe(1);
 
     db.close();
   });
 
-  test("dream_passes accepts valid INSERT", () => {
+  test("digest_passes accepts valid INSERT", () => {
     const { db, path } = tempDb();
     cleanup.push(path);
 
     db.run(
-      `INSERT INTO dream_passes
+      `INSERT INTO digest_passes
         (timestamp, duration_ms, ops_requested, ops_executed,
          memories_created, memories_merged, memories_pruned, memories_superseded,
          associations_created, identity_ops, errors)
@@ -76,7 +76,7 @@ describe("diagnostic schema", () => {
       [Date.now(), 1500, 10, 8, 3, 1, 0, 1, 4, 2, JSON.stringify(["minor issue"])],
     );
 
-    const row = db.query("SELECT * FROM dream_passes WHERE id = 1").get() as Record<string, unknown>;
+    const row = db.query("SELECT * FROM digest_passes WHERE id = 1").get() as Record<string, unknown>;
     expect(row.duration_ms).toBe(1500);
     expect(row.memories_created).toBe(3);
     expect(row.errors).toBe(JSON.stringify(["minor issue"]));
@@ -84,18 +84,18 @@ describe("diagnostic schema", () => {
     db.close();
   });
 
-  test("hippocampus_runs accepts valid INSERT", () => {
+  test("selector_runs accepts valid INSERT", () => {
     const { db, path } = tempDb();
     cleanup.push(path);
 
     db.run(
-      `INSERT INTO hippocampus_runs
+      `INSERT INTO selector_runs
         (timestamp, duration_ms, memory_ids, memory_count, cue_text)
        VALUES (?, ?, ?, ?, ?)`,
       [Date.now(), 350, JSON.stringify([1, 5, 12]), 3, "what is the project about"],
     );
 
-    const row = db.query("SELECT * FROM hippocampus_runs WHERE id = 1").get() as Record<string, unknown>;
+    const row = db.query("SELECT * FROM selector_runs WHERE id = 1").get() as Record<string, unknown>;
     expect(row.duration_ms).toBe(350);
     expect(row.memory_count).toBe(3);
     expect(row.cue_text).toBe("what is the project about");
@@ -250,7 +250,7 @@ describe("API: agent endpoints", () => {
   });
 });
 
-describe("API: dreams and hippo persistence", () => {
+describe("API: digest and selector persistence", () => {
   const cleanup: string[] = [];
 
   afterEach(() => {
@@ -262,13 +262,13 @@ describe("API: dreams and hippo persistence", () => {
     cleanup.length = 0;
   });
 
-  test("dream_passes stores and retrieves multiple passes", () => {
+  test("digest_passes stores and retrieves multiple passes", () => {
     const { db, path } = tempDb();
     cleanup.push(path);
 
     for (let i = 0; i < 3; i++) {
       db.run(
-        `INSERT INTO dream_passes
+        `INSERT INTO digest_passes
           (timestamp, duration_ms, ops_requested, ops_executed,
            memories_created, memories_merged, memories_pruned, memories_superseded,
            associations_created, identity_ops, errors)
@@ -277,27 +277,27 @@ describe("API: dreams and hippo persistence", () => {
       );
     }
 
-    const rows = db.query("SELECT * FROM dream_passes ORDER BY timestamp DESC").all() as Record<string, unknown>[];
+    const rows = db.query("SELECT * FROM digest_passes ORDER BY timestamp DESC").all() as Record<string, unknown>[];
     expect(rows.length).toBe(3);
     expect(rows[0]!.duration_ms).toBe(1200); // last inserted
 
     db.close();
   });
 
-  test("hippocampus_runs stores and retrieves multiple runs", () => {
+  test("selector_runs stores and retrieves multiple runs", () => {
     const { db, path } = tempDb();
     cleanup.push(path);
 
     for (let i = 0; i < 5; i++) {
       db.run(
-        `INSERT INTO hippocampus_runs
+        `INSERT INTO selector_runs
           (timestamp, duration_ms, memory_ids, memory_count, cue_text)
          VALUES (?, ?, ?, ?, ?)`,
         [Date.now() + i, 200 + i * 50, JSON.stringify([i, i + 1]), 2, `cue ${i}`],
       );
     }
 
-    const rows = db.query("SELECT * FROM hippocampus_runs ORDER BY timestamp DESC").all() as Record<string, unknown>[];
+    const rows = db.query("SELECT * FROM selector_runs ORDER BY timestamp DESC").all() as Record<string, unknown>[];
     expect(rows.length).toBe(5);
 
     // Verify JSON parsing roundtrip
@@ -307,12 +307,12 @@ describe("API: dreams and hippo persistence", () => {
     db.close();
   });
 
-  test("dream_passes with null errors", () => {
+  test("digest_passes with null errors", () => {
     const { db, path } = tempDb();
     cleanup.push(path);
 
     db.run(
-      `INSERT INTO dream_passes
+      `INSERT INTO digest_passes
         (timestamp, duration_ms, ops_requested, ops_executed,
          memories_created, memories_merged, memories_pruned, memories_superseded,
          associations_created, identity_ops, errors)
@@ -320,14 +320,14 @@ describe("API: dreams and hippo persistence", () => {
       [Date.now(), 500, 3, 3, 1, 0, 0, 0, 1, 0, null],
     );
 
-    const row = db.query("SELECT errors FROM dream_passes WHERE id = 1").get() as { errors: string | null };
+    const row = db.query("SELECT errors FROM digest_passes WHERE id = 1").get() as { errors: string | null };
     expect(row.errors).toBeNull();
 
     db.close();
   });
 });
 
-describe("API: eidetic endpoint", () => {
+describe("API: history endpoint", () => {
   const cleanup: string[] = [];
 
   afterEach(() => {
@@ -339,7 +339,7 @@ describe("API: eidetic endpoint", () => {
     cleanup.length = 0;
   });
 
-  test("eidetic returns events with pagination info", () => {
+  test("history returns events with pagination info", () => {
     const { db, path } = tempDb();
     cleanup.push(path);
 
@@ -364,14 +364,14 @@ describe("API: eidetic endpoint", () => {
     db.close();
   });
 
-  test("eidetic FTS5 search works on raw_events", () => {
+  test("history FTS5 search works on raw_events", () => {
     const { db, path } = tempDb();
     cleanup.push(path);
 
     const now = Date.now();
     db.run(
       "INSERT INTO raw_events (timestamp, message_group, role, content_type, content) VALUES (?, ?, ?, ?, ?)",
-      [now, 1, "user", "text", "tell me about purple elephants"],
+      [now, 1, "user", "text", "tell me about SQLite indexing"],
     );
     db.run(
       "INSERT INTO raw_events (timestamp, message_group, role, content_type, content) VALUES (?, ?, ?, ?, ?)",
@@ -381,7 +381,7 @@ describe("API: eidetic endpoint", () => {
     const results = db.query(
       `SELECT r.id FROM raw_events r
        JOIN raw_events_fts f ON f.rowid = r.id
-       WHERE raw_events_fts MATCH '"purple"'`
+       WHERE raw_events_fts MATCH '"SQLite"'`
     ).all();
     expect(results.length).toBe(1);
 
@@ -508,11 +508,11 @@ describe("HTML pages", () => {
     expect(html).toContain("Requests: 42");
   });
 
-  test("agent page includes Eidetic tab", async () => {
+  test("agent page includes History tab", async () => {
     // Use a known agent from the filesystem if available, otherwise check the template
     const agents = new Map<string, AgentContext>();
     const stats = makeStats();
-    // The renderAgentPage function always includes the Eidetic tab
+    // The renderAgentPage function always includes the History tab
     // We can verify via the index page that it references the right tabs
     const resp = handleDashboardRequest(makeUrl("/_dashboard/"), agents, stats);
     const html = await resp!.text();

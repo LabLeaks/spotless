@@ -3,13 +3,13 @@ import { Database } from "bun:sqlite";
 import { openDb, initSchema } from "../src/db.ts";
 import {
   recall,
-  spreadActivation,
+  traverseGraph,
   scoreMemory,
   getIdentityNodes,
   touchMemories,
   logRetrieval,
 } from "../src/recall.ts";
-import { createMemory, createAssociation } from "../src/dream-tools.ts";
+import { createMemory, createAssociation } from "../src/digest-tools.ts";
 import type { Memory } from "../src/types.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -93,7 +93,7 @@ describe("recall", () => {
     expect(result.some(m => m.content.includes("TypeScript"))).toBe(true);
   });
 
-  test("spreading activation follows associations", () => {
+  test("graph traversal follows associations", () => {
     const id1 = insertMemory(db, "authentication system", 0.7);
     const id2 = insertMemory(db, "JWT token setup", 0.6);
     const id3 = insertMemory(db, "unrelated topic", 0.5);
@@ -103,11 +103,11 @@ describe("recall", () => {
     const result = recall(db, "authentication");
     const ids = result.map(m => m.id);
     expect(ids).toContain(id1);
-    expect(ids).toContain(id2); // reached via spreading activation
+    expect(ids).toContain(id2); // reached via graph traversal
   });
 });
 
-describe("spreadActivation", () => {
+describe("traverseGraph", () => {
   let db: Database;
   let dbPath: string;
 
@@ -121,7 +121,7 @@ describe("spreadActivation", () => {
   });
 
   test("empty seeds returns empty", () => {
-    const result = spreadActivation(db, []);
+    const result = traverseGraph(db, []);
     expect(result).toEqual([]);
   });
 
@@ -134,7 +134,7 @@ describe("spreadActivation", () => {
     for (let i = 0; i < 9; i++) {
       createAssociation(db, ids[i]!, ids[i + 1]!, 0.5);
     }
-    const result = spreadActivation(db, [ids[0]!], { maxNodes: 3 });
+    const result = traverseGraph(db, [ids[0]!], { maxNodes: 3 });
     expect(result.length).toBeLessThanOrEqual(3);
   });
 
@@ -145,7 +145,7 @@ describe("spreadActivation", () => {
     createAssociation(db, id1, id2, 0.8);
     createAssociation(db, id1, id3, 0.05); // too weak
 
-    const result = spreadActivation(db, [id1], { minEdgeStrength: 0.1 });
+    const result = traverseGraph(db, [id1], { minEdgeStrength: 0.1 });
     const ids = result.map(m => m.id);
     expect(ids).toContain(id1);
     expect(ids).toContain(id2);
@@ -160,7 +160,7 @@ describe("spreadActivation", () => {
     for (let i = 1; i < 10; i++) {
       createAssociation(db, ids[0]!, ids[i]!, 0.5);
     }
-    const result = spreadActivation(db, [ids[0]!], { maxResults: 3 });
+    const result = traverseGraph(db, [ids[0]!], { maxResults: 3 });
     expect(result.length).toBeLessThanOrEqual(3);
   });
 });
@@ -297,7 +297,7 @@ describe("getIdentityNodes", () => {
   });
 });
 
-describe("spreadActivation archived exclusion", () => {
+describe("traverseGraph archived exclusion", () => {
   let db: Database;
   let dbPath: string;
 
@@ -321,7 +321,7 @@ describe("spreadActivation archived exclusion", () => {
     // Archive id3
     db.run("UPDATE memories SET archived_at = ? WHERE id = ?", [Date.now(), id3]);
 
-    const result = spreadActivation(db, [id1]);
+    const result = traverseGraph(db, [id1]);
     const ids = result.map(m => m.id);
     expect(ids).toContain(id1);
     expect(ids).toContain(id2);
@@ -332,7 +332,7 @@ describe("spreadActivation archived exclusion", () => {
     const id1 = insertMemory(db, "archived seed", 0.7);
     db.run("UPDATE memories SET archived_at = ? WHERE id = ?", [Date.now(), id1]);
 
-    const result = spreadActivation(db, [id1]);
+    const result = traverseGraph(db, [id1]);
     expect(result.length).toBe(0);
   });
 });

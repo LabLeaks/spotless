@@ -39,7 +39,7 @@ Wired into proxy.ts on human turns. Eidetic prefix built before archiving curren
 Works automatically — buildEideticTrace queries DB on every human turn. Restart = fresh proxy state but full DB history.
 
 ### TASK-005: Real Claude Code Integration Test ✅
-Verified: told Claude "favorite color is purple, dog is Biscuit" in one invocation, asked in separate invocation, got correct answer. Cross-session memory works.
+Verified: told Claude "personal facts about the project" in one invocation, asked in separate invocation, got correct answer. Cross-session memory works.
 
 ---
 
@@ -85,7 +85,7 @@ Removes consecutive identical user messages (from retried failed requests).
 ### 2026-02-24
 - Implemented eidetic.ts and tokens.ts
 - Wired into proxy, tested with real CC
-- Cross-session memory verified ("favorite color is purple, dog is Biscuit")
+- Cross-session memory verified ("personal facts about the project")
 - Fixed gzip, thinking signature, multi-project DB routing bugs
 - Interactive testing revealed UI thrashing, compression errors — all fixed
 

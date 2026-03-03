@@ -10,22 +10,20 @@ import {
   updateMemory,
   mergeMemories,
   countHumanTurnsBetween,
-  pruneMemory,
   drainRetrievalLog,
   supersedeMemory,
-  reflectOnSelf,
   updateSelfConcept,
-  recompileIdentityCache,
   markSignificance,
   cleanupConsolidatedFromFts,
-} from "../src/dream-tools.ts";
+  getIdentityFacts,
+} from "../src/digest-tools.ts";
 import { getIdentityNodes } from "../src/recall.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unlinkSync } from "node:fs";
 
 function tempDb(): { db: Database; path: string } {
-  const path = join(tmpdir(), `spotless-dream-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  const path = join(tmpdir(), `spotless-digest-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
   const db = openDb(path);
   initSchema(db);
   return { db, path };
@@ -55,7 +53,7 @@ function insertMemory(db: Database, content: string, salience: number, accessCou
   return (db.query("SELECT last_insert_rowid() as id").get() as { id: number }).id;
 }
 
-describe("dream-tools", () => {
+describe("digest-tools", () => {
   const cleanup: string[] = [];
 
   afterEach(() => {
@@ -558,90 +556,6 @@ describe("dream-tools", () => {
     });
   });
 
-  describe("pruneMemory", () => {
-    test("prunes when all three conditions met", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
-
-      const id = insertMemory(db, "ephemeral", 0.1, 0); // low salience, zero access
-
-      const result = pruneMemory(db, id);
-      expect(result).toBe(true);
-
-      const mem = db.query("SELECT * FROM memories WHERE id = ?").get(id);
-      expect(mem).toBeNull();
-
-      db.close();
-    });
-
-    test("refuses to prune high salience", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
-
-      const id = insertMemory(db, "important", 0.8, 0);
-
-      const result = pruneMemory(db, id);
-      expect(result).toBe(false);
-
-      const mem = db.query("SELECT * FROM memories WHERE id = ?").get(id);
-      expect(mem).not.toBeNull();
-
-      db.close();
-    });
-
-    test("refuses to prune with access count > 0", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
-
-      const id = insertMemory(db, "accessed", 0.1, 3);
-
-      const result = pruneMemory(db, id);
-      expect(result).toBe(false);
-
-      db.close();
-    });
-
-    test("refuses to prune with strong associations", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
-
-      const id1 = insertMemory(db, "connected low", 0.1, 0);
-      const id2 = insertMemory(db, "other", 0.5);
-
-      createAssociation(db, id1, id2, 0.5); // strong association
-
-      const result = pruneMemory(db, id1);
-      expect(result).toBe(false);
-
-      db.close();
-    });
-
-    test("prunes with only weak associations", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
-
-      const id1 = insertMemory(db, "weakly connected", 0.1, 0);
-      const id2 = insertMemory(db, "other", 0.5);
-
-      createAssociation(db, id1, id2, 0.1); // weak association
-
-      const result = pruneMemory(db, id1);
-      expect(result).toBe(true);
-
-      db.close();
-    });
-
-    test("returns false for non-existent memory", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
-
-      const result = pruneMemory(db, 99999);
-      expect(result).toBe(false);
-
-      db.close();
-    });
-  });
-
   describe("drainRetrievalLog", () => {
     test("returns co-retrieval sets and cleans up", () => {
       const { db, path } = tempDb();
@@ -841,97 +755,6 @@ describe("dream-tools", () => {
     });
   });
 
-  describe("reflectOnSelf", () => {
-    test("creates memory at 0.85 with source event links", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
-
-      const ev1 = insertRawEvent(db, 1, "user", "text", "interaction data");
-      const { newId } = reflectOnSelf(db, "I tend to over-engineer", [ev1]);
-
-      const mem = db.query("SELECT * FROM memories WHERE id = ?").get(newId) as any;
-      expect(mem.content).toBe("I tend to over-engineer");
-      expect(mem.salience).toBe(0.85);
-
-      const sources = db.query("SELECT raw_event_id FROM memory_sources WHERE memory_id = ?").all(newId) as any[];
-      expect(sources.length).toBe(1);
-      expect(sources[0].raw_event_id).toBe(ev1);
-
-      db.close();
-    });
-
-    test("associates with self-model node at 0.8 when node exists", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
-
-      // Create self-model node directly
-      const selfId = insertMemory(db, "Test-first engineer", 0.9);
-      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [selfId]);
-
-      const { newId } = reflectOnSelf(db, "I tend to over-engineer", []);
-
-      const assocs = getAssociations(db, newId);
-      const selfAssoc = assocs.find(a => a.connected_id === selfId);
-      expect(selfAssoc).toBeDefined();
-      expect(selfAssoc!.strength).toBe(0.8);
-
-      db.close();
-    });
-
-    test("anchor='relationship' associates with relationship node", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
-
-      // Create relationship node
-      const relId = insertMemory(db, "Collaborative dynamic", 0.85);
-      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('relationship', ?)", [relId]);
-
-      const { newId } = reflectOnSelf(db, "We work well on debugging together", [], "relationship");
-
-      const mem = db.query("SELECT * FROM memories WHERE id = ?").get(newId) as any;
-      expect(mem.content).toBe("We work well on debugging together");
-      expect(mem.salience).toBe(0.85);
-
-      const assocs = getAssociations(db, newId);
-      const relAssoc = assocs.find(a => a.connected_id === relId);
-      expect(relAssoc).toBeDefined();
-      expect(relAssoc!.strength).toBe(0.8);
-
-      db.close();
-    });
-
-    test("works when no self-model node exists", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
-
-      const { newId } = reflectOnSelf(db, "I tend to over-engineer", []);
-
-      const mem = db.query("SELECT * FROM memories WHERE id = ?").get(newId) as any;
-      expect(mem.content).toBe("I tend to over-engineer");
-      expect(mem.salience).toBe(0.85);
-
-      // No association since no self-model
-      const assocs = getAssociations(db, newId);
-      expect(assocs.length).toBe(0);
-
-      db.close();
-    });
-
-    test("content is pure insight text — no metadata prefix", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
-
-      const { newId } = reflectOnSelf(db, "Always run tests", []);
-
-      const mem = db.query("SELECT content FROM memories WHERE id = ?").get(newId) as any;
-      expect(mem.content).toBe("Always run tests");
-      // No [SELF] or [INSIGHT] prefix
-      expect(mem.content).not.toMatch(/^\[/);
-
-      db.close();
-    });
-  });
-
   describe("updateSelfConcept", () => {
     test("creates a fact memory with anchor association", () => {
       const { db, path } = tempDb();
@@ -1010,145 +833,129 @@ describe("dream-tools", () => {
     });
   });
 
-  describe("recompileIdentityCache", () => {
-    test("assembles compiled content from graph neighbors", () => {
+  describe("getIdentityFacts", () => {
+    test("returns facts associated to identity anchor", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      // Create an initial self identity cache node
-      const cacheId = insertMemory(db, "old self cache", 0.9);
-      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [cacheId]);
+      // Create an anchor memory and register it
+      const anchorId = insertMemory(db, "anchor", 0.9);
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [anchorId]);
 
-      // Create neighbor memories and associate them to the cache node
+      // Create neighbor memories with distinct timestamps for deterministic ordering
       const m1 = insertMemory(db, "I am thorough and detail-oriented", 0.8);
+      db.run("UPDATE memories SET created_at = ? WHERE id = ?", [1000, m1]);
       const m2 = insertMemory(db, "I prefer test-first development", 0.7);
-      createAssociation(db, cacheId, m1, 0.7);
-      createAssociation(db, cacheId, m2, 0.6);
+      db.run("UPDATE memories SET created_at = ? WHERE id = ?", [2000, m2]);
+      createAssociation(db, anchorId, m1, 0.7);
+      createAssociation(db, anchorId, m2, 0.6);
 
-      const { newCacheId, previousCacheId } = recompileIdentityCache(db, "self");
+      const facts = getIdentityFacts(db, "self");
 
-      expect(previousCacheId).toBe(cacheId);
-      expect(newCacheId).not.toBe(cacheId);
-
-      // New cache should contain compiled content from neighbors (sorted by salience DESC)
-      const newMem = db.query("SELECT content, salience FROM memories WHERE id = ?").get(newCacheId) as any;
-      expect(newMem.content).toContain("I am thorough and detail-oriented");
-      expect(newMem.content).toContain("I prefer test-first development");
-      expect(newMem.salience).toBe(0.9); // self role gets 0.9
-
-      // Registry should point to new cache
-      const reg = db.query("SELECT memory_id FROM identity_nodes WHERE role = 'self'").get() as any;
-      expect(reg.memory_id).toBe(newCacheId);
-
-      // Old cache should be archived
-      const oldMem = db.query("SELECT archived_at FROM memories WHERE id = ?").get(cacheId) as any;
-      expect(oldMem.archived_at).not.toBeNull();
+      expect(facts.length).toBe(2);
+      // Ordered by created_at DESC (newest first)
+      expect(facts[0]!.content).toBe("I prefer test-first development");
+      expect(facts[1]!.content).toBe("I am thorough and detail-oriented");
 
       db.close();
     });
 
-    test("minimal content when no graph neighbors", () => {
+    test("returns empty array when no registry entry", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      // Create a self node with no associated memories
-      const cacheId = insertMemory(db, "old cache", 0.9);
-      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [cacheId]);
-
-      const { newCacheId } = recompileIdentityCache(db, "self", "test-agent");
-
-      const newMem = db.query("SELECT content FROM memories WHERE id = ?").get(newCacheId) as any;
-      expect(newMem.content).toBe("I am test-agent.");
+      const facts = getIdentityFacts(db, "self");
+      expect(facts.length).toBe(0);
 
       db.close();
     });
 
-    test("relationship role minimal content", () => {
+    test("returns empty array when no associations", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      const cacheId = insertMemory(db, "old rel cache", 0.85);
-      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('relationship', ?)", [cacheId]);
+      const anchorId = insertMemory(db, "anchor", 0.9);
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [anchorId]);
 
-      const { newCacheId } = recompileIdentityCache(db, "relationship");
-
-      const newMem = db.query("SELECT content, salience FROM memories WHERE id = ?").get(newCacheId) as any;
-      expect(newMem.content).toBe("Relationship with this human.");
-      expect(newMem.salience).toBe(0.85); // relationship role gets 0.85
+      const facts = getIdentityFacts(db, "self");
+      expect(facts.length).toBe(0);
 
       db.close();
     });
 
-    test("archive/replace lifecycle: old cache archived, new cache active", () => {
+    test("excludes archived memories", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      // First compile
-      const initId = insertMemory(db, "initial cache", 0.9);
-      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [initId]);
+      const anchorId = insertMemory(db, "anchor", 0.9);
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [anchorId]);
 
-      const { newCacheId: firstCacheId } = recompileIdentityCache(db, "self", "agent-x");
+      const active = insertMemory(db, "I am active", 0.8);
+      const archived = insertMemory(db, "I am archived", 0.7);
+      db.run("UPDATE memories SET archived_at = ? WHERE id = ?", [Date.now(), archived]);
 
-      // Add a neighbor then recompile
-      const m1 = insertMemory(db, "I learned something new", 0.75);
-      createAssociation(db, firstCacheId, m1, 0.6);
+      createAssociation(db, anchorId, active, 0.7);
+      createAssociation(db, anchorId, archived, 0.7);
 
-      const { newCacheId: secondCacheId, previousCacheId } = recompileIdentityCache(db, "self");
-
-      expect(previousCacheId).toBe(firstCacheId);
-
-      // First cache archived
-      const firstMem = db.query("SELECT archived_at FROM memories WHERE id = ?").get(firstCacheId) as any;
-      expect(firstMem.archived_at).not.toBeNull();
-
-      // Second cache active
-      const secondMem = db.query("SELECT archived_at, content FROM memories WHERE id = ?").get(secondCacheId) as any;
-      expect(secondMem.archived_at).toBeNull();
-      expect(secondMem.content).toContain("I learned something new");
-
-      // Registry points to latest
-      const reg = db.query("SELECT memory_id FROM identity_nodes WHERE role = 'self'").get() as any;
-      expect(reg.memory_id).toBe(secondCacheId);
+      const facts = getIdentityFacts(db, "self");
+      expect(facts.length).toBe(1);
+      expect(facts[0]!.content).toBe("I am active");
 
       db.close();
     });
 
-    test("excludes archived neighbors from compiled content", () => {
+    test("excludes weak associations (< 0.5)", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      const cacheId = insertMemory(db, "self cache", 0.9);
-      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [cacheId]);
+      const anchorId = insertMemory(db, "anchor", 0.9);
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [anchorId]);
 
-      const activeNeighbor = insertMemory(db, "I am active content", 0.8);
-      const archivedNeighbor = insertMemory(db, "I am archived content", 0.7);
-      db.run("UPDATE memories SET archived_at = ? WHERE id = ?", [Date.now(), archivedNeighbor]);
+      const strong = insertMemory(db, "strong connection", 0.8);
+      const weak = insertMemory(db, "weak connection", 0.7);
+      createAssociation(db, anchorId, strong, 0.6);
+      createAssociation(db, anchorId, weak, 0.3);
 
-      createAssociation(db, cacheId, activeNeighbor, 0.7);
-      createAssociation(db, cacheId, archivedNeighbor, 0.7);
-
-      const { newCacheId } = recompileIdentityCache(db, "self");
-
-      const newMem = db.query("SELECT content FROM memories WHERE id = ?").get(newCacheId) as any;
-      expect(newMem.content).toContain("I am active content");
-      expect(newMem.content).not.toContain("I am archived content");
+      const facts = getIdentityFacts(db, "self");
+      expect(facts.length).toBe(1);
+      expect(facts[0]!.content).toBe("strong connection");
 
       db.close();
     });
 
-    test("fresh creation when no registry entry exists", () => {
+    test("works for relationship role", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      const { newCacheId, previousCacheId } = recompileIdentityCache(db, "self", "fresh-agent");
+      const anchorId = insertMemory(db, "rel anchor", 0.85);
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('relationship', ?)", [anchorId]);
 
-      expect(previousCacheId).toBeNull();
+      const m1 = insertMemory(db, "They trust me with git ops", 0.8);
+      createAssociation(db, anchorId, m1, 0.7);
 
-      const mem = db.query("SELECT content FROM memories WHERE id = ?").get(newCacheId) as any;
-      expect(mem.content).toBe("I am fresh-agent.");
+      const facts = getIdentityFacts(db, "relationship");
+      expect(facts.length).toBe(1);
+      expect(facts[0]!.content).toBe("They trust me with git ops");
 
-      const reg = db.query("SELECT memory_id FROM identity_nodes WHERE role = 'self'").get() as any;
-      expect(reg.memory_id).toBe(newCacheId);
+      db.close();
+    });
+
+    test("returns facts with correct fields", () => {
+      const { db, path } = tempDb();
+      cleanup.push(path);
+
+      const anchorId = insertMemory(db, "anchor", 0.9);
+      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('self', ?)", [anchorId]);
+
+      const m1 = insertMemory(db, "test fact", 0.75);
+      createAssociation(db, anchorId, m1, 0.6);
+
+      const facts = getIdentityFacts(db, "self");
+      expect(facts.length).toBe(1);
+      expect(facts[0]!.id).toBe(m1);
+      expect(facts[0]!.content).toBe("test fact");
+      expect(facts[0]!.salience).toBe(0.75);
+      expect(typeof facts[0]!.created_at).toBe("number");
 
       db.close();
     });
@@ -1269,7 +1076,7 @@ describe("dream-tools", () => {
       const { db, path } = tempDb();
       cleanup.push(path);
 
-      const factId = createMemory(db, "user's dog is Biscuit", 0.7, [], "fact");
+      const factId = createMemory(db, "project started in March 2024", 0.7, [], "fact");
       const epiId = createMemory(db, "that was tense", 0.6, [], "episodic");
 
       const factMem = db.query("SELECT type FROM memories WHERE id = ?").get(factId) as any;
@@ -1338,19 +1145,5 @@ describe("dream-tools", () => {
       db.close();
     });
 
-    test("recompileIdentityCache: old archived with preserved content", () => {
-      const { db, path } = tempDb();
-      cleanup.push(path);
-
-      const oldId = insertMemory(db, "Rel v1", 0.85);
-      db.run("INSERT OR REPLACE INTO identity_nodes (role, memory_id) VALUES ('relationship', ?)", [oldId]);
-      recompileIdentityCache(db, "relationship");
-
-      const old = db.query("SELECT content, archived_at FROM memories WHERE id = ?").get(oldId) as any;
-      expect(old.content).toBe("Rel v1");
-      expect(old.archived_at).not.toBeNull();
-
-      db.close();
-    });
   });
 });

@@ -4,15 +4,15 @@ import { openDb, initSchema } from "../src/db.ts";
 import {
   getPressureLevel,
   getIntervalForPressure,
-  buildFatigueSignal,
+  buildPressureSignal,
   getWatermark,
   getConsolidationPressure,
   getConsolidationStatus,
   PRESSURE_MODERATE,
   PRESSURE_HIGH,
-  DREAM_INTERVAL_RELAXED,
-  DREAM_INTERVAL_NORMAL,
-  DREAM_INTERVAL_AGGRESSIVE,
+  DIGEST_INTERVAL_RELAXED,
+  DIGEST_INTERVAL_NORMAL,
+  DIGEST_INTERVAL_AGGRESSIVE,
 } from "../src/consolidation.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,21 +47,21 @@ describe("pressure level", () => {
 
 describe("interval for pressure", () => {
   test("returns relaxed for low pressure", () => {
-    expect(getIntervalForPressure(0)).toBe(DREAM_INTERVAL_RELAXED);
-    expect(getIntervalForPressure(0.1)).toBe(DREAM_INTERVAL_RELAXED);
-    expect(getIntervalForPressure(0.29)).toBe(DREAM_INTERVAL_RELAXED);
+    expect(getIntervalForPressure(0)).toBe(DIGEST_INTERVAL_RELAXED);
+    expect(getIntervalForPressure(0.1)).toBe(DIGEST_INTERVAL_RELAXED);
+    expect(getIntervalForPressure(0.29)).toBe(DIGEST_INTERVAL_RELAXED);
   });
 
   test("returns normal for moderate-low pressure", () => {
-    expect(getIntervalForPressure(0.3)).toBe(DREAM_INTERVAL_NORMAL);
-    expect(getIntervalForPressure(0.5)).toBe(DREAM_INTERVAL_NORMAL);
-    expect(getIntervalForPressure(0.59)).toBe(DREAM_INTERVAL_NORMAL);
+    expect(getIntervalForPressure(0.3)).toBe(DIGEST_INTERVAL_NORMAL);
+    expect(getIntervalForPressure(0.5)).toBe(DIGEST_INTERVAL_NORMAL);
+    expect(getIntervalForPressure(0.59)).toBe(DIGEST_INTERVAL_NORMAL);
   });
 
   test("returns aggressive for moderate-high pressure", () => {
-    expect(getIntervalForPressure(0.6)).toBe(DREAM_INTERVAL_AGGRESSIVE);
-    expect(getIntervalForPressure(0.7)).toBe(DREAM_INTERVAL_AGGRESSIVE);
-    expect(getIntervalForPressure(0.84)).toBe(DREAM_INTERVAL_AGGRESSIVE);
+    expect(getIntervalForPressure(0.6)).toBe(DIGEST_INTERVAL_AGGRESSIVE);
+    expect(getIntervalForPressure(0.7)).toBe(DIGEST_INTERVAL_AGGRESSIVE);
+    expect(getIntervalForPressure(0.84)).toBe(DIGEST_INTERVAL_AGGRESSIVE);
   });
 
   test("returns 0 (immediate) for high pressure", () => {
@@ -70,21 +70,21 @@ describe("interval for pressure", () => {
   });
 });
 
-describe("fatigue signal", () => {
+describe("pressure signal", () => {
   test("returns empty string for low pressure", () => {
-    expect(buildFatigueSignal(0.3, 40000)).toBe("");
-    expect(buildFatigueSignal(0.59, 80000)).toBe("");
+    expect(buildPressureSignal(0.3, 40000)).toBe("");
+    expect(buildPressureSignal(0.59, 80000)).toBe("");
   });
 
   test("returns moderate signal for moderate pressure", () => {
-    const signal = buildFatigueSignal(0.7, 100000);
+    const signal = buildPressureSignal(0.7, 100000);
     expect(signal).toContain('<memory-pressure level="moderate">');
     expect(signal).toContain("100k tokens");
     expect(signal).toContain("</memory-pressure>");
   });
 
   test("returns high signal for high pressure", () => {
-    const signal = buildFatigueSignal(0.9, 130000);
+    const signal = buildPressureSignal(0.9, 130000);
     expect(signal).toContain('<memory-pressure level="high">');
     expect(signal).toContain("130k tokens");
     expect(signal).toContain("slow down");
@@ -92,7 +92,7 @@ describe("fatigue signal", () => {
   });
 
   test("signal token count rounds to nearest k", () => {
-    const signal = buildFatigueSignal(0.7, 85500);
+    const signal = buildPressureSignal(0.7, 85500);
     expect(signal).toContain("86k tokens");
   });
 });
@@ -414,7 +414,7 @@ describe("post-pass marking integration", () => {
     expect(before.pressure).toBeGreaterThan(0);
     expect(before.unconsolidatedTokens).toBeGreaterThan(0);
 
-    // Simulate dreamer marking groups 1 and 2 as consolidated
+    // Simulate digester marking groups 1 and 2 as consolidated
     const groupIds = [1, 2];
     const placeholders = groupIds.map(() => "?").join(",");
     db.run(
@@ -431,7 +431,7 @@ describe("post-pass marking integration", () => {
     expect(getWatermark(db)).toBe(2);
 
     // queryRawEvents with unconsolidatedOnly should only return group 3
-    const { queryRawEvents } = require("../src/dream-tools.ts");
+    const { queryRawEvents } = require("../src/digest-tools.ts");
     const groups = queryRawEvents(db, { unconsolidatedOnly: true });
     expect(groups.length).toBe(1);
     expect(groups[0].message_group).toBe(3);

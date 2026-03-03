@@ -1,27 +1,26 @@
 import { test, expect, describe } from "bun:test";
 import {
-  buildDreamSystemPrompt,
-  buildDreamInitialMessage,
-  buildDreamTurnPrompt,
+  buildDigestSystemPrompt,
+  buildDigestInitialMessage,
+  buildDigestTurnPrompt,
   buildReflectionSystemPrompt,
   buildReflectionInitialMessage,
-  type DreamContext,
-  type DreamTurn,
+  type DigestContext,
+  type DigestTurn,
   type ReflectionPassContext,
-} from "../src/dream-prompt.ts";
+} from "../src/digest-prompt.ts";
 
-describe("dream-prompt", () => {
-  describe("buildDreamSystemPrompt", () => {
+describe("digest-prompt", () => {
+  describe("buildDigestSystemPrompt", () => {
     test("includes consolidation goals", () => {
-      const prompt = buildDreamSystemPrompt();
+      const prompt = buildDigestSystemPrompt();
       expect(prompt).toContain("Substance filter");
       expect(prompt).toContain("Pattern separation");
       expect(prompt).toContain("Salience scoring");
-      expect(prompt).toContain("Pruning");
     });
 
     test("includes 11 consolidation tool definitions", () => {
-      const prompt = buildDreamSystemPrompt();
+      const prompt = buildDigestSystemPrompt();
       expect(prompt).toContain("query_memories");
       expect(prompt).toContain("query_raw_events");
       expect(prompt).toContain("get_associations");
@@ -30,44 +29,43 @@ describe("dream-prompt", () => {
       expect(prompt).toContain("update_memory");
       expect(prompt).toContain("merge_memories");
       expect(prompt).toContain("count_human_turns_between");
-      expect(prompt).toContain("prune_memory");
       expect(prompt).toContain("drain_retrieval_log");
       expect(prompt).toContain("supersede_memory");
     });
 
     test("does NOT include reflection tool definitions", () => {
-      const prompt = buildDreamSystemPrompt();
+      const prompt = buildDigestSystemPrompt();
       expect(prompt).not.toContain("reflect_on_self");
       expect(prompt).not.toContain("update_self_concept");
       expect(prompt).not.toContain("mark_significance");
     });
 
     test("does NOT include reflection goals", () => {
-      const prompt = buildDreamSystemPrompt();
+      const prompt = buildDigestSystemPrompt();
       expect(prompt).not.toContain("Self-reflection");
       expect(prompt).not.toContain("Relational awareness");
       expect(prompt).not.toContain("Valuation (vmPFC)");
     });
 
     test("includes done signal", () => {
-      const prompt = buildDreamSystemPrompt();
+      const prompt = buildDigestSystemPrompt();
       expect(prompt).toContain('"tool":"done"');
     });
 
     test("includes salience ranges per type", () => {
-      const prompt = buildDreamSystemPrompt();
+      const prompt = buildDigestSystemPrompt();
       expect(prompt).toContain("fact");
       expect(prompt).toContain("episodic");
     });
 
     test("create_memory includes type parameter", () => {
-      const prompt = buildDreamSystemPrompt();
+      const prompt = buildDigestSystemPrompt();
       expect(prompt).toContain('"type"');
       expect(prompt).toContain('"episodic"');
     });
 
     test("type classification heuristic in prompt", () => {
-      const prompt = buildDreamSystemPrompt();
+      const prompt = buildDigestSystemPrompt();
       // Should mention both types for classification
       expect(prompt).toContain("episodic");
       expect(prompt).toContain("fact");
@@ -75,19 +73,19 @@ describe("dream-prompt", () => {
     });
 
     test("does NOT mention [SUPERSEDED] prefix", () => {
-      const prompt = buildDreamSystemPrompt();
+      const prompt = buildDigestSystemPrompt();
       expect(prompt).not.toContain("[SUPERSEDED]");
     });
 
     test("mentions archive semantics for supersede", () => {
-      const prompt = buildDreamSystemPrompt();
+      const prompt = buildDigestSystemPrompt();
       expect(prompt).toContain("archived");
     });
   });
 
-  describe("buildDreamInitialMessage", () => {
+  describe("buildDigestInitialMessage", () => {
     test("includes raw events", () => {
-      const msg = buildDreamInitialMessage({
+      const msg = buildDigestInitialMessage({
         rawEventGroups: [{
           message_group: 1,
           events: [
@@ -103,7 +101,7 @@ describe("dream-prompt", () => {
     });
 
     test("includes retrieval log summary", () => {
-      const msg = buildDreamInitialMessage({
+      const msg = buildDigestInitialMessage({
         rawEventGroups: [{
           message_group: 1,
           events: [{ id: 1, role: "user", content_type: "text", content: "test" }],
@@ -116,7 +114,7 @@ describe("dream-prompt", () => {
 
     test("truncates very long content", () => {
       const longContent = "x".repeat(3000);
-      const msg = buildDreamInitialMessage({
+      const msg = buildDigestInitialMessage({
         rawEventGroups: [{
           message_group: 1,
           events: [{ id: 1, role: "user", content_type: "text", content: longContent }],
@@ -128,19 +126,19 @@ describe("dream-prompt", () => {
     });
   });
 
-  describe("buildDreamTurnPrompt", () => {
+  describe("buildDigestTurnPrompt", () => {
     test("includes system prompt and initial message", () => {
-      const prompt = buildDreamTurnPrompt("SYSTEM", "INITIAL", []);
+      const prompt = buildDigestTurnPrompt("SYSTEM", "INITIAL", []);
       expect(prompt).toContain("SYSTEM");
       expect(prompt).toContain("INITIAL");
     });
 
     test("includes conversation history", () => {
-      const turns: DreamTurn[] = [
+      const turns: DigestTurn[] = [
         { role: "assistant", content: '{"tool":"query_memories","input":{}}' },
         { role: "user", content: '{"memories":[]}' },
       ];
-      const prompt = buildDreamTurnPrompt("SYS", "INIT", turns);
+      const prompt = buildDigestTurnPrompt("SYS", "INIT", turns);
       expect(prompt).toContain("[ASSISTANT]");
       expect(prompt).toContain("query_memories");
       expect(prompt).toContain("[TOOL RESULT]");
@@ -148,11 +146,11 @@ describe("dream-prompt", () => {
     });
 
     test("adds continuation instruction when history exists", () => {
-      const turns: DreamTurn[] = [
+      const turns: DigestTurn[] = [
         { role: "assistant", content: "test" },
         { role: "user", content: "result" },
       ];
-      const prompt = buildDreamTurnPrompt("SYS", "INIT", turns);
+      const prompt = buildDigestTurnPrompt("SYS", "INIT", turns);
       expect(prompt).toContain("Continue");
     });
   });
@@ -173,18 +171,19 @@ describe("dream-prompt", () => {
     test("includes only reflection tools, not consolidation mutation tools", () => {
       const prompt = buildReflectionSystemPrompt("wren");
       // Reflection tools present
-      expect(prompt).toContain("reflect_on_self");
       expect(prompt).toContain("update_self_concept");
       expect(prompt).toContain("mark_significance");
       expect(prompt).toContain("query_memories");
       expect(prompt).toContain("done");
+
+      // reflect_on_self removed — all output through update_self_concept
+      expect(prompt).not.toContain("reflect_on_self");
 
       // Consolidation mutation tools absent
       expect(prompt).not.toContain("create_memory");
       expect(prompt).not.toContain("create_association");
       expect(prompt).not.toContain("merge_memories");
       expect(prompt).not.toContain("update_memory");
-      expect(prompt).not.toContain("prune_memory");
       expect(prompt).not.toContain("supersede_memory");
       expect(prompt).not.toContain("query_raw_events");
       expect(prompt).not.toContain("drain_retrieval_log");
@@ -201,17 +200,17 @@ describe("dream-prompt", () => {
       const msg = buildReflectionInitialMessage({
         agentName: "wren",
         newMemories: [
-          { id: 5, content: "User prefers purple", salience: 0.7 },
-          { id: 6, content: "Dog named Biscuit", salience: 0.6 },
+          { id: 5, content: "Project uses Bun runtime", salience: 0.7 },
+          { id: 6, content: "Preferred DB is PostgreSQL", salience: 0.6 },
         ],
         identityNodes: [],
         totalMemoryCount: 10,
       });
       expect(msg).toContain("#5");
       expect(msg).toContain("salience 0.7");
-      expect(msg).toContain("User prefers purple");
+      expect(msg).toContain("Project uses Bun runtime");
       expect(msg).toContain("#6");
-      expect(msg).toContain("Dog named Biscuit");
+      expect(msg).toContain("Preferred DB is PostgreSQL");
     });
 
     test("shows existing identity nodes with role labels", () => {
@@ -259,6 +258,44 @@ describe("dream-prompt", () => {
         totalMemoryCount: 5,
       });
       expect(msg).toContain("No new memories");
+    });
+
+    test("shows associated memories per anchor when provided", () => {
+      const msg = buildReflectionInitialMessage({
+        agentName: "wren",
+        newMemories: [{ id: 10, content: "new thing", salience: 0.6 }],
+        identityNodes: [
+          { role: "self", id: 1, content: "I am thorough" },
+          { role: "relationship", id: 2, content: "Trust-based" },
+        ],
+        totalMemoryCount: 20,
+        associatedMemories: {
+          self: [
+            { id: 5, content: "I value correctness", salience: 0.8 },
+            { id: 7, content: "I prefer Bun over Node", salience: 0.7 },
+          ],
+          relationship: [
+            { id: 9, content: "They trust me with git ops", salience: 0.75 },
+          ],
+        },
+      });
+      expect(msg).toContain("Existing self facts");
+      expect(msg).toContain("#5");
+      expect(msg).toContain("I value correctness");
+      expect(msg).toContain("#7");
+      expect(msg).toContain("Existing relationship facts");
+      expect(msg).toContain("#9");
+      expect(msg).toContain("supersedes_id");
+    });
+
+    test("omits associated memories section when not provided", () => {
+      const msg = buildReflectionInitialMessage({
+        agentName: "wren",
+        newMemories: [{ id: 10, content: "new thing", salience: 0.6 }],
+        identityNodes: [{ role: "self", id: 1, content: "I am thorough" }],
+        totalMemoryCount: 5,
+      });
+      expect(msg).not.toContain("Existing self facts");
     });
   });
 });

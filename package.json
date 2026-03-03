@@ -3,7 +3,15 @@
   "version": "0.1.0",
   "module": "src/index.ts",
   "type": "module",
-  "private": true,
+  "private": false,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/didgeoridoo/spotless.git"
+  },
+  "author": "didgeoridoo",
+  "homepage": "https://github.com/didgeoridoo/spotless",
+  "keywords": ["claude", "claude-code", "memory", "proxy", "neuromorphic", "sqlite"],
   "bin": {
     "spotless": "src/index.ts"
   },

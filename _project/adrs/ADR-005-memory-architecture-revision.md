@@ -12,7 +12,7 @@ ADR-003 introduced typed memories (episodic/fact/affective/identity) with archiv
 
 2. **No type classification in dreaming**: The dream prompt doesn't tell Haiku to classify memories by type. All memories are created as undifferentiated episodic.
 
-3. **No fact lifecycle**: Facts ("user's dog is Biscuit") have no current-state semantics. They're treated identically to episodic events.
+3. **No fact lifecycle**: Facts ("project uses Bun") have no current-state semantics. They're treated identically to episodic events.
 
 4. **Mixed context assembly**: `<your memories>` lumps identity, facts, and episodic memories into one undifferentiated tag. The agent can't distinguish "who I am" from "what I know" from "what happened."
 
@@ -200,7 +200,7 @@ When creating memories, classify by type:
 - episodic: events, experiences, observations, emotional moments
   ("We debugged the proxy for 3 hours", "That breakthrough felt incredible")
 - fact: atomic knowledge that could change
-  ("User's dog is Biscuit", "Project uses Bun", "User's favorite color is purple")
+  ("Project started in March 2024", "Project uses Bun runtime", "Preferred DB is PostgreSQL")
 
 Emotional experiences are episodic, not a separate type. Give them higher
 salience (0.8-0.9) so they naturally bias retrieval.

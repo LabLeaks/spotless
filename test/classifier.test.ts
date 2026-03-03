@@ -3,7 +3,7 @@ import { classifyRequest } from "../src/classifier.ts";
 import type { ApiRequest } from "../src/types.ts";
 
 describe("classifyRequest", () => {
-  const mainSystemPrompt = "You are Claude.\nPrimary working directory: /Users/gk/project\nContents of CLAUDE.md...";
+  const mainSystemPrompt = "You are Claude.\nPrimary working directory: /home/user/project\nContents of CLAUDE.md...";
 
   test("first request in conversation is human_turn", () => {
     const req: ApiRequest = {
@@ -71,7 +71,7 @@ describe("classifyRequest", () => {
     const req: ApiRequest = {
       model: "claude-sonnet-4-20250514",
       system: [
-        { type: "text", text: "You are Claude.\nPrimary working directory: /Users/gk/project" },
+        { type: "text", text: "You are Claude.\nPrimary working directory: /home/user/project" },
         { type: "text", text: "Contents of CLAUDE.md..." },
       ],
       messages: [{ role: "user", content: "Hello" }],

@@ -3,13 +3,13 @@
  * Spotless CLI entry point.
  *
  * Usage:
- *   spotless start [--port 9000] [--no-dream]
+ *   spotless start [--port 9000] [--no-digest]
  *   spotless stop
  *   spotless status
  *   spotless code [--agent <name>] [--port 9000] [-- ...claude args]
  *   spotless agents
- *   spotless dream [--agent <name>] [--dry-run] [--model haiku|sonnet]
- *   spotless repair [--agent <name>] [--purge-eidetic] [--fix]
+ *   spotless digest [--agent <name>] [--dry-run] [--model haiku|sonnet]
+ *   spotless repair [--agent <name>] [--purge-history] [--fix]
  */
 
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
@@ -18,9 +18,9 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { startProxy } from "./proxy.ts";
 import { generateAgentName, validateAgentName, listAgents } from "./agent.ts";
-import { createDreamLoop } from "./dream-loop.ts";
-import { runDreamPass } from "./dreamer.ts";
-import { diagnose, purgeEidetic, repairEidetic } from "./repair.ts";
+import { createDigestLoop } from "./digest-loop.ts";
+import { runDigestPass } from "./digester.ts";
+import { diagnose, purgeHistory, repairHistory } from "./repair.ts";
 
 const SPOTLESS_DIR = join(homedir(), ".spotless");
 const PID_FILE = join(SPOTLESS_DIR, "spotless.pid");
@@ -28,14 +28,14 @@ const DEFAULT_PORT = 9000;
 
 function cmdHelp(): void {
   console.log(`
-  spotless — neuromorphic memory for Claude Code
+  spotless — persistent memory for Claude Code
 
   COMMANDS
 
-    spotless start [--port 9000] [--no-dream]
+    spotless start [--port 9000] [--no-digest]
         Start the proxy. Listens for Claude Code requests and archives
-        everything to per-agent SQLite. Background dreaming runs every 5m
-        unless --no-dream is passed.
+        everything to per-agent SQLite. Background digesting runs every 5m
+        unless --no-digest is passed.
 
     spotless stop
         Stop the running proxy.
@@ -51,16 +51,16 @@ function cmdHelp(): void {
     spotless agents
         List all agents with DB sizes.
 
-    spotless dream [--agent <name>] [--dry-run] [--model haiku|sonnet]
-        Run a dream pass (memory consolidation). Dreams all agents if
+    spotless digest [--agent <name>] [--dry-run] [--model haiku|sonnet]
+        Run a digest pass (memory consolidation). Digests all agents if
         --agent is omitted.
 
-    spotless repair [--agent <name>] [--purge-eidetic] [--fix]
+    spotless repair [--agent <name>] [--purge-history] [--fix]
         Diagnose and repair agent database corruption.
         Without flags: runs diagnostics and reports issues.
         --fix: targeted repair (remove leaked subagent boundaries
-               and dead retry sessions from eidetic archive).
-        --purge-eidetic: nuclear option — clears ALL raw events
+               and dead retry sessions from history archive).
+        --purge-history: nuclear option — clears ALL raw events
                while preserving memories, identity, and associations.
 
     spotless help
@@ -69,8 +69,8 @@ function cmdHelp(): void {
   DASHBOARD
 
     Open http://localhost:<port>/_dashboard/ in a browser while the
-    proxy is running to browse agent memories, identity, dream passes,
-    hippocampus runs, and raw eidetic events.
+    proxy is running to browse agent memories, identity, digest passes,
+    selector runs, and raw history events.
 
   EXAMPLES
 
@@ -78,7 +78,7 @@ function cmdHelp(): void {
     spotless code --agent wren              # launch claude as agent "wren"
     spotless code                           # pick or create an agent interactively
     spotless code --agent wren -- -p "hi"   # non-interactive prompt mode
-    spotless dream --agent wren             # consolidate wren's memories
+    spotless digest --agent wren             # consolidate wren's memories
     spotless agents                         # list all agents
 `.trimStart());
 }
@@ -123,10 +123,10 @@ interface ParsedArgs {
   port: number;
   agent: string | null;
   claudeArgs: string[];
-  noDream: boolean;
+  noDigest: boolean;
   dryRun: boolean;
   model: string | null;
-  purgeEidetic: boolean;
+  purgeHistory: boolean;
   fix: boolean;
 }
 
@@ -135,10 +135,10 @@ function parseArgs(args: string[]): ParsedArgs {
   let port = DEFAULT_PORT;
   let agent: string | null = null;
   let claudeArgs: string[] = [];
-  let noDream = false;
+  let noDigest = false;
   let dryRun = false;
   let model: string | null = null;
-  let purgeEidetic = false;
+  let purgeHistory = false;
   let fix = false;
 
   // Split on -- to separate spotless args from claude args
@@ -156,12 +156,12 @@ function parseArgs(args: string[]): ParsedArgs {
     } else if (spotlessArgs[i] === "--agent" && spotlessArgs[i + 1]) {
       agent = spotlessArgs[i + 1]!;
       i++;
-    } else if (spotlessArgs[i] === "--no-dream") {
-      noDream = true;
+    } else if (spotlessArgs[i] === "--no-digest") {
+      noDigest = true;
     } else if (spotlessArgs[i] === "--dry-run") {
       dryRun = true;
-    } else if (spotlessArgs[i] === "--purge-eidetic") {
-      purgeEidetic = true;
+    } else if (spotlessArgs[i] === "--purge-history") {
+      purgeHistory = true;
     } else if (spotlessArgs[i] === "--fix") {
       fix = true;
     } else if (spotlessArgs[i] === "--model" && spotlessArgs[i + 1]) {
@@ -170,12 +170,12 @@ function parseArgs(args: string[]): ParsedArgs {
     }
   }
 
-  return { command, port, agent, claudeArgs, noDream, dryRun, model, purgeEidetic, fix };
+  return { command, port, agent, claudeArgs, noDigest, dryRun, model, purgeHistory, fix };
 }
 
 // --- Commands ---
 
-function cmdStart(port: number, noDream: boolean): void {
+function cmdStart(port: number, noDigest: boolean): void {
   // Check for existing instance
   const existing = readPid();
   if (existing && isProcessRunning(existing.pid)) {
@@ -189,27 +189,27 @@ function cmdStart(port: number, noDream: boolean): void {
   const proxy = startProxy({ port });
   writePid(port);
 
-  // Start background dreaming unless disabled
-  let dreamLoop: ReturnType<typeof createDreamLoop> | null = null;
-  if (!noDream) {
-    dreamLoop = createDreamLoop();
-    dreamLoop.start(() => proxy.getAgentNames());
+  // Start background digesting unless disabled
+  let digestLoop: ReturnType<typeof createDigestLoop> | null = null;
+  if (!noDigest) {
+    digestLoop = createDigestLoop();
+    digestLoop.start(() => proxy.getAgentNames());
 
-    // Wire trim-triggered dreaming: when pressure is high and trim occurred, escalate
-    proxy.onEideticTrimmed = (agentName: string) => {
-      dreamLoop!.escalate(agentName);
+    // Wire trim-triggered digesting: when pressure is high and trim occurred, escalate
+    proxy.onHistoryTrimmed = (agentName: string) => {
+      digestLoop!.escalate(agentName);
     };
 
-    // Wire agent init: schedule new agents for dreaming on first request
+    // Wire agent init: schedule new agents for digesting on first request
     proxy.onAgentInit = (agentName: string) => {
-      dreamLoop!.registerAgent(agentName);
+      digestLoop!.registerAgent(agentName);
     };
   }
 
   // Graceful shutdown
   const shutdown = () => {
     console.log("\n[spotless] Shutting down...");
-    if (dreamLoop) dreamLoop.stop();
+    if (digestLoop) digestLoop.stop();
     proxy.stop();
     removePid();
     process.exit(0);
@@ -385,41 +385,41 @@ function cmdAgents(): void {
   }
 }
 
-async function cmdDream(agentArg: string | null, dryRun: boolean, model: string | null): Promise<void> {
+async function cmdDigest(agentArg: string | null, dryRun: boolean, model: string | null): Promise<void> {
   if (!agentArg) {
-    // Dream all agents
+    // Digest all agents
     const agents = listAgents();
     if (agents.length === 0) {
       console.log("[spotless] No agents found");
       return;
     }
     for (const agent of agents) {
-      console.log(`[spotless] Dreaming: ${agent.name}`);
-      const result = await runDreamPass({
+      console.log(`[spotless] Digesting: ${agent.name}`);
+      const result = await runDigestPass({
         agentName: agent.name,
         model: model ?? "haiku",
         dryRun,
       });
-      printDreamResult(agent.name, result);
+      printDigestResult(agent.name, result);
     }
   } else {
     if (!validateAgentName(agentArg)) {
       console.error(`[spotless] Invalid agent name: "${agentArg}"`);
       process.exit(1);
     }
-    console.log(`[spotless] Dreaming: ${agentArg}`);
-    const result = await runDreamPass({
+    console.log(`[spotless] Digesting: ${agentArg}`);
+    const result = await runDigestPass({
       agentName: agentArg,
       model: model ?? "haiku",
       dryRun,
     });
-    printDreamResult(agentArg, result);
+    printDigestResult(agentArg, result);
   }
 }
 
-function printDreamResult(agentName: string, result: import("./types.ts").DreamResult): void {
+function printDigestResult(agentName: string, result: import("./types.ts").DigestResult): void {
   console.log(`[spotless] ${agentName}: ${result.operationsRequested} ops requested, ${result.operationsExecuted} executed`);
-  console.log(`  memories: +${result.memoriesCreated} created, ${result.memoriesMerged} merged, -${result.memoriesPruned} pruned`);
+  console.log(`  memories: +${result.memoriesCreated} created, ${result.memoriesMerged} merged, ${result.memoriesSuperseded} superseded`);
   console.log(`  associations: +${result.associationsCreated}`);
   console.log(`  duration: ${result.durationMs}ms`);
   if (result.errors.length > 0) {
@@ -427,7 +427,7 @@ function printDreamResult(agentName: string, result: import("./types.ts").DreamR
   }
 }
 
-function cmdRepair(agentArg: string | null, purgeEideticFlag: boolean, fixFlag: boolean): void {
+function cmdRepair(agentArg: string | null, purgeHistoryFlag: boolean, fixFlag: boolean): void {
   if (!agentArg) {
     // Diagnose all agents
     const agents = listAgents();
@@ -436,30 +436,30 @@ function cmdRepair(agentArg: string | null, purgeEideticFlag: boolean, fixFlag: 
       return;
     }
     for (const a of agents) {
-      runDiagnostics(a.name, purgeEideticFlag, fixFlag);
+      runDiagnostics(a.name, purgeHistoryFlag, fixFlag);
     }
   } else {
     if (!validateAgentName(agentArg)) {
       console.error(`[spotless] Invalid agent name: "${agentArg}"`);
       process.exit(1);
     }
-    runDiagnostics(agentArg, purgeEideticFlag, fixFlag);
+    runDiagnostics(agentArg, purgeHistoryFlag, fixFlag);
   }
 }
 
-function runDiagnostics(agentName: string, purgeEideticFlag: boolean, fixFlag: boolean): void {
+function runDiagnostics(agentName: string, purgeHistoryFlag: boolean, fixFlag: boolean): void {
   console.log(`\n[spotless] Diagnosing: ${agentName}`);
 
   const report = diagnose(agentName);
 
   // Print Tier 1 stats
-  console.log(`  Tier 1 (eidetic archive):`);
+  console.log(`  Tier 1 (history archive):`);
   console.log(`    events: ${report.tier1.totalEvents}  groups: ${report.tier1.totalGroups}  boundaries: ${report.tier1.sessionBoundaries}`);
 
   // Print Tier 2 stats
-  console.log(`  Tier 2 (engram network):`);
+  console.log(`  Tier 2 (memory graph):`);
   console.log(`    memories: ${report.tier2.memories}  associations: ${report.tier2.associations}  identity nodes: ${report.tier2.identityNodes}`);
-  console.log(`    dream passes: ${report.tier2.dreamPasses}  hippocampus runs: ${report.tier2.hippocampusRuns}`);
+  console.log(`    digest passes: ${report.tier2.digestPasses}  selector runs: ${report.tier2.selectorRuns}`);
 
   // Print issues
   if (report.issues.length === 0) {
@@ -472,13 +472,13 @@ function runDiagnostics(agentName: string, purgeEideticFlag: boolean, fixFlag: b
   }
 
   // Targeted repair
-  if (fixFlag && !purgeEideticFlag) {
+  if (fixFlag && !purgeHistoryFlag) {
     if (report.issues.length === 0) {
       console.log(`  Nothing to fix.`);
       return;
     }
     console.log(`  Repairing...`);
-    const result = repairEidetic(agentName);
+    const result = repairHistory(agentName);
     console.log(`    boundaries removed: ${result.boundariesRemoved}`);
     console.log(`    dead sessions removed: ${result.deadSessionsRemoved}`);
 
@@ -491,15 +491,15 @@ function runDiagnostics(agentName: string, purgeEideticFlag: boolean, fixFlag: b
       for (const issue of after.issues) {
         console.log(`    - ${issue}`);
       }
-      console.log(`  If issues persist, try --purge-eidetic to clear Tier 1 (memories are preserved).`);
+      console.log(`  If issues persist, try --purge-history to clear Tier 1 (memories are preserved).`);
     }
     return;
   }
 
-  // Nuclear option: purge eidetic
-  if (purgeEideticFlag) {
-    console.log(`  Purging eidetic archive (preserving Tier 2 memories + identity)...`);
-    const result = purgeEidetic(agentName);
+  // Nuclear option: purge history
+  if (purgeHistoryFlag) {
+    console.log(`  Purging history archive (preserving Tier 2 memories + identity)...`);
+    const result = purgeHistory(agentName);
     console.log(`  Deleted ${result.eventsDeleted} raw events. Tier 2 intact.`);
     console.log(`  Agent will start with a clean conversation history.`);
     return;
@@ -508,17 +508,17 @@ function runDiagnostics(agentName: string, purgeEideticFlag: boolean, fixFlag: b
   // Just diagnostics — suggest actions
   if (report.issues.length > 0) {
     console.log(`\n  To attempt targeted repair: spotless repair --agent ${agentName} --fix`);
-    console.log(`  To clear Tier 1 entirely:   spotless repair --agent ${agentName} --purge-eidetic`);
+    console.log(`  To clear Tier 1 entirely:   spotless repair --agent ${agentName} --purge-history`);
   }
 }
 
 // --- Main ---
 
-const { command, port, agent, claudeArgs, noDream, dryRun, model, purgeEidetic: purgeEideticFlag, fix: fixFlag } = parseArgs(process.argv.slice(2));
+const { command, port, agent, claudeArgs, noDigest, dryRun, model, purgeHistory: purgeHistoryFlag, fix: fixFlag } = parseArgs(process.argv.slice(2));
 
 switch (command) {
   case "start":
-    cmdStart(port, noDream);
+    cmdStart(port, noDigest);
     break;
   case "stop":
     cmdStop();
@@ -532,11 +532,11 @@ switch (command) {
   case "agents":
     cmdAgents();
     break;
-  case "dream":
-    await cmdDream(agent, dryRun, model);
+  case "digest":
+    await cmdDigest(agent, dryRun, model);
     break;
   case "repair":
-    cmdRepair(agent, purgeEideticFlag, fixFlag);
+    cmdRepair(agent, purgeHistoryFlag, fixFlag);
     break;
   case "help":
   case "--help":
