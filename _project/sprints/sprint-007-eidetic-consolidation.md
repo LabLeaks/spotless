@@ -8,9 +8,9 @@ Replace reactive trim-then-dream with proactive consolidation: explicit `consoli
 
 ## Context
 
-- **ADR-004**: `_project/adrs/ADR-004-eidetic-consolidation-memory-pressure.md`
+- **ADR-004**: `_project/adrs/ADR-004-history-consolidation-memory-pressure.md`
 - **PRD**: `_project/prds/spotless-prd.md`
-- **Prior sprints**: 1-6 complete (proxy, eidetic, agents, dreaming, hippocampus, dashboard)
+- **Prior sprints**: 1-6 complete (proxy, history, agents, digesting, selector, dashboard)
 - **Current state**: 281 tests passing, typecheck clean
 
 ## Tasks
@@ -45,7 +45,7 @@ Add `consolidated INTEGER NOT NULL DEFAULT 0` to `raw_events`. Add missing `memo
 
 ### TASK-2: Dream Tools — `unconsolidatedOnly` Uses Column (S)
 
-**Priority:** P0 — dreaming must use the new column
+**Priority:** P0 — digesting must use the new column
 
 **Files:** `src/dream-tools.ts`, `test/dream-tools.test.ts`
 
@@ -69,7 +69,7 @@ Replace the `NOT IN (SELECT raw_event_id FROM memory_sources)` anti-pattern with
 
 ### TASK-3: Dreamer — Post-Pass Marking + Pressure in Result (S)
 
-**Priority:** P0 — dreaming must mark what it processed
+**Priority:** P0 — digesting must mark what it processed
 
 **Depends on:** TASK-2 (column filter) AND TASK-4 (pressure function)
 
@@ -153,15 +153,15 @@ Single module for all consolidation logic: watermark queries, pressure computati
 
 **Priority:** P1 — wires everything together
 
-**Files:** `src/proxy.ts`, `src/eidetic.ts`, `src/types.ts`
+**Files:** `src/proxy.ts`, `src/history.ts`, `src/types.ts`
 
 **Description:**
 On human turns, compute consolidation status, inject fatigue signal into user message, and trigger escalated dreams when pressure is high and trimming occurred.
 
 **Work:**
-- `EideticTraceResult` in `src/eidetic.ts`: add `pressure: number` and `unconsolidatedTokens: number` fields
-- In `buildEideticTrace`: call `getConsolidationPressure(db)` (uses `EIDETIC_BUDGET` default), include both `pressure` and `unconsolidatedTokens` in result
-- In proxy human_turn block (after building eidetic trace):
+- `HistoryTraceResult` in `src/history.ts`: add `pressure: number` and `unconsolidatedTokens: number` fields
+- In `buildHistoryTrace`: call `getConsolidationPressure(db)` (uses `HISTORY_BUDGET` default), include both `pressure` and `unconsolidatedTokens` in result
+- In proxy human_turn block (after building history trace):
   - Read `pressure` and `unconsolidatedTokens` from trace result
   - Call `buildFatigueSignal(pressure, unconsolidatedTokens)`
   - Prepend to `memorySuffix` (before identity tag)
@@ -191,7 +191,7 @@ Replace `setInterval` with `setTimeout`-after-completion. After each dream pass,
 
 **Work:**
 - Per-agent state: `Map<string, { timeout: Timer | null, pendingEscalate: boolean }>` — tracks scheduled timeouts and pending escalations per agent
-- `escalate(agentName: string): void` — **synchronous** (fire-and-forget). If agent is currently dreaming, set `pendingEscalate = true`; if idle, trigger immediately. The proxy already fire-and-forgets via `.catch()` at index.ts:200, so async is unnecessary
+- `escalate(agentName: string): void` — **synchronous** (fire-and-forget). If agent is currently digesting, set `pendingEscalate = true`; if idle, trigger immediately. The proxy already fire-and-forgets via `.catch()` at index.ts:200, so async is unnecessary
 - Replace `setInterval` in `start()` with per-agent `setTimeout` scheduling
 - After each `dreamAgent()` completes:
   - Read `pressure` from `DreamResult` (computed in TASK-3, no DB open needed)
@@ -257,7 +257,7 @@ Add consolidation status to the dashboard API and agent detail page.
 Update all documentation with the new architecture. Run full verification.
 
 **Work:**
-- Update CLAUDE.md: architecture section (consolidation column, fatigue signal, adaptive dreaming), sprint status
+- Update CLAUDE.md: architecture section (consolidation column, fatigue signal, adaptive digesting), sprint status
 - Update ADR-004: status from "Proposed" to "Accepted", fix `/4` → `/4.0` in code examples, update `fatigue.ts` → `consolidation.ts`, update "dream loop queries DB" → "dreamer returns pressure in DreamResult", update dashboard `currentDreamInterval` → `expectedInterval`
 - Run `bun run typecheck` — clean
 - Run `bun test` — all pass
@@ -288,7 +288,7 @@ TASK-1 (schema)
 
 **Critical path:** 1 → 4 → 3 → 6 → 8
 
-**Parallel track:** 1 → 4 → 5 (proxy integration, independent of dreaming track after TASK-4)
+**Parallel track:** 1 → 4 → 5 (proxy integration, independent of digesting track after TASK-4)
 
 **Parallelizable after TASK-1:** TASK-2 and TASK-4 are independent. TASK-7 (dashboard) is independent of all. TASK-5 and TASK-3 both depend on TASK-4 but are independent of each other.
 

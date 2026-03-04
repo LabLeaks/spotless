@@ -2,15 +2,15 @@
 
 **Status:** Accepted
 **Supersedes:** ADR-003 (memory type architecture)
-**Related:** ADR-002 (working self critique), ADR-004 (eidetic consolidation)
+**Related:** ADR-002 (working self critique), ADR-004 (history consolidation)
 
 ## Context
 
 ADR-003 introduced typed memories (episodic/fact/affective/identity) with archive lifecycle. Implementation added the schema but not the behavioral changes. Real-world testing with nova revealed deeper architectural issues:
 
-1. **Identity as monolithic blob**: `evolveIdentity()` creates a single memory encoding EVERYTHING about the agent's self-concept. This is fragile (one bad dream rewrites all), non-compositional, and architecturally wrong — identity is a computation over memories, not a stored thing.
+1. **Identity as monolithic blob**: `evolveIdentity()` creates a single memory encoding EVERYTHING about the agent's self-concept. This is fragile (one bad digest rewrites all), non-compositional, and architecturally wrong — identity is a computation over memories, not a stored thing.
 
-2. **No type classification in dreaming**: The dream prompt doesn't tell Haiku to classify memories by type. All memories are created as undifferentiated episodic.
+2. **No type classification in digesting**: The digest prompt doesn't tell Haiku to classify memories by type. All memories are created as undifferentiated episodic.
 
 3. **No fact lifecycle**: Facts ("project uses Bun") have no current-state semantics. They're treated identically to episodic events.
 
@@ -28,7 +28,7 @@ Extensive research into human memory and identity formation (Korsgaard, MacIntyr
 
 - **Lifecycle, not ontology, distinguishes types.** Episodic memories are append-only (what happened, happened). Facts are current-state (knowledge updates). The difference is in write pattern, not in storage structure. `archived_at` captures this correctly. (Sources: Tulving 1972, Renoult et al. 2012, Nader 2000)
 
-- **Sleep consolidation extracts facts from episodes.** Hippocampal replay during slow-wave sleep transfers knowledge from episodic to semantic stores. The dreaming process IS this extraction. (Sources: Diekelmann & Born 2010, Tse et al. 2007)
+- **Sleep consolidation extracts facts from episodes.** Hippocampal replay during slow-wave sleep transfers knowledge from episodic to semantic stores. The digesting process IS this extraction. (Sources: Diekelmann & Born 2010, Tse et al. 2007)
 
 - **Affect and self-relevance are independent signals, not a pipeline.** Emotional processing (amygdala) and self-referential processing (mPFC) are distinct neural mechanisms with "little evidence for overlap" (Kensinger & Schacter 2008). Both provide independent memory advantages through separate circuits. There is no "affect → identity" retrieval pathway. (Sources: Kensinger & Schacter 2008, Fossati et al. 2004)
 
@@ -67,7 +67,7 @@ Existing `type='identity'` and `type='affective'` rows are reclassified to `type
 
 These functions create monolithic blobs — they are the homunculus problem at the data level. Remove them entirely.
 
-The dreaming reflection pass (Phase 2) creates individual memories of two kinds:
+The digesting reflection pass (Phase 2) creates individual memories of two kinds:
 
 **Self-concept facts** (current-state, supersedable):
 - "I value epistemic honesty over diplomatic hedging" → `type='fact'`
@@ -95,8 +95,8 @@ The `identity_nodes` table stays but its role changes. The nodes are **graph anc
 
 **Cache lifecycle**:
 - **Read path** (every human turn): proxy reads identity_node memories directly — one row lookup per node, no graph walk needed
-- **Write path** (dreaming Phase 2): after creating/superseding individual self-concept facts and reflections, dreaming re-compiles the identity_node content from the graph. Old compiled memory archived, new one created. This is the only "evolve"-like step, but it's assembling from real data, not generating de novo
-- **Invalidation**: only dreaming writes to the cache. Between dream passes, the cache is stable
+- **Write path** (digesting Phase 2): after creating/superseding individual self-concept facts and reflections, digesting re-compiles the identity_node content from the graph. Old compiled memory archived, new one created. This is the only "evolve"-like step, but it's assembling from real data, not generating de novo
+- **Invalidation**: only digesting writes to the cache. Between digest passes, the cache is stable
 
 **Graph structure**:
 - `self` node: compiled self-concept → associated to individual self-concept facts + self-reflections
@@ -110,28 +110,28 @@ The agent's context window is assembled from four sources with distinct function
 
 ```
 1. System prompt     — CC's prompt + Spotless orientation (augmented)
-2. Eidetic trace     — recent conversation history (Tier 1)
+2. History trace     — recent conversation history (Tier 1)
 3. Current message, prefixed with:
-   a. <your identity>     — self-concept (identity_node cache, materialized by dreaming)
-   b. <relevant knowledge> — facts + episodic relevant to context (hippocampus)
+   a. <your identity>     — self-concept (identity_node cache, materialized by digesting)
+   b. <relevant knowledge> — facts + episodic relevant to context (selector)
    c. [actual user text]
 ```
 
-#### a. `<your identity>` — always-on, hippocampus-independent
+#### a. `<your identity>` — always-on, selector-independent
 
-Populated by reading identity_node cache, not hippocampus:
+Populated by reading identity_node cache, not selector:
 - Read self and relationship identity_node memories directly (1-2 row lookups)
-- These contain the compiled self-concept and relationship dynamic, materialized by dreaming
+- These contain the compiled self-concept and relationship dynamic, materialized by digesting
 - Budget: ~2000 tokens
 - Render as `<your identity>...</your identity>`
 
-This is the agent's working self — cached by dreaming, served by proxy. No graph walk needed at request time. No dependence on hippocampus success.
+This is the agent's working self — cached by digesting, served by proxy. No graph walk needed at request time. No dependence on selector success.
 
-#### b. `<relevant knowledge>` — hippocampus-selected, context-dependent
+#### b. `<relevant knowledge>` — selector-selected, context-dependent
 
-Populated by hippocampus recall pipeline:
+Populated by selector recall pipeline:
 - FTS5 search + spreading activation from user's message
-- Results filtered: exclude identity-associated memories (already in identity tag)
+- Results filtered: exclude identity-associated memories (already in `<your identity>` tag)
 - Facts and relevant episodic memories
 - Budget: ~6000 tokens
 - Render as `<relevant knowledge>...</relevant knowledge>`
@@ -140,8 +140,8 @@ Populated by hippocampus recall pipeline:
 
 | Tag | Source | Always present? | Content |
 |-----|--------|-----------------|---------|
-| `<your identity>` | identity_node cache (materialized by dreaming) | Yes | Who you are |
-| `<relevant knowledge>` | Hippocampus recall | When relevant | What you know / what happened |
+| `<your identity>` | identity_node cache (materialized by digesting) | Yes | Who you are |
+| `<relevant knowledge>` | Selector recall | When relevant | What you know / what happened |
 
 ### 5. System prompt augmentation
 
@@ -149,7 +149,7 @@ The proxy augments CC's system prompt with a Spotless orientation block. This us
 
 ```xml
 <spotless-orientation>
-You have a neuromorphic memory system called Spotless. Your identity and
+You have a persistent memory system called Spotless. Your identity and
 memories are provided in tags within your messages:
 - <your identity> contains your self-concept — who you are, your values,
   your commitments. This is internal to you, not external context.
@@ -166,7 +166,7 @@ features — Spotless handles your memory.
 
 This is prepended to `body.system` on non-subagent human turns only.
 
-### 6. Dream Phase 2: Reflection (not identity evolution)
+### 6. Digest Phase 2: Reflection (not identity evolution)
 
 Phase 2 is renamed from "identity pass" to "reflection pass." Its tools change:
 
@@ -191,7 +191,7 @@ Phase 2 is renamed from "identity pass" to "reflection pass." Its tools change:
 
 **Trigger:** Phase 2 runs when new memories were created in Phase 1. It does NOT need to run when identity nodes are "missing" (the anchors are stable).
 
-### 7. Fact lifecycle in dreaming
+### 7. Fact lifecycle in digesting
 
 Phase 1 (consolidation) gets explicit type classification guidance:
 
@@ -213,7 +213,7 @@ to archive the old version and create the corrected one.
 
 ### 8. Memory preamble update
 
-The eidetic trace preamble (the synthetic user/assistant pair at the start of conversation history) is updated to reflect the memory architecture:
+The history trace preamble (the synthetic user/assistant pair at the start of conversation history) is updated to reflect the memory architecture:
 
 ```
 [Spotless Memory System] Your name is "{agentName}". The messages that follow
@@ -242,7 +242,7 @@ through Spotless, and conversation history from previous sessions.
 
 ### Negative
 
-- **Identity staleness between dream passes.** The compiled identity cache is only refreshed by dreaming. If the agent develops new self-concept during a long conversation, it won't appear in `<your identity>` until the next dream pass. Mitigated by adaptive dream scheduling (high pressure → frequent passes).
+- **Identity staleness between digest passes.** The compiled identity cache is only refreshed by digesting. If the agent develops new self-concept during a long conversation, it won't appear in `<your identity>` until the next digest pass. Mitigated by adaptive digest scheduling (high pressure → frequent passes).
 - **Reflection quality depends on Haiku.** Individual self-reflections need to be well-crafted. Bad reflections accumulate (can't just regenerate the whole identity).
 - **No mood-congruent retrieval yet.** Current emotional context doesn't bias retrieval toward emotionally-similar memories. Research shows this works via valence-weighted spreading activation — the association graph supports it, but we'd need a valence column on memories or associations. Deferred as future optimization.
 - **Migration complexity.** Existing `type='identity'` and `type='affective'` memories must be reclassified to episodic. Existing monolithic identity blobs should probably be archived and replaced with individual reflections seeded from their content.
@@ -250,7 +250,7 @@ through Spotless, and conversation history from previous sessions.
 ### Neutral
 
 - **identity_nodes table persists** but with changed semantics (graph anchors, not content stores).
-- **Two-phase dreaming persists** but Phase 2 is lighter (0-3 reflections instead of comprehensive identity regeneration).
+- **Two-phase digesting persists** but Phase 2 is lighter (0-3 reflections instead of comprehensive identity regeneration).
 - **`<your memories>` tag renamed** to `<relevant knowledge>` — different name, same rendering mechanism.
 - **CHECK constraint simplified** from 4 types to 2: `('episodic','fact')`. Fewer categories, more emergence.
 
@@ -280,7 +280,7 @@ Like ADR-003 proposed — identity memories accumulate but old versions get arch
 
 ### E. Explicit self-relevance tag on memories
 
-Add a `self_relevant REAL` column to memories, populated during dreaming. Rejected because self-relevance IS association strength to the self-anchor. Adding an explicit column predetermines what should be emergent — a memory's self-relevance should grow organically through co-retrieval and co-activation with the self-anchor, not be assigned at creation time. The graph already captures this through spreading activation. (Cf. Korsgaard: identity is constituted through the ongoing act of reflective endorsement, not through categorical labeling.)
+Add a `self_relevant REAL` column to memories, populated during digesting. Rejected because self-relevance IS association strength to the self-anchor. Adding an explicit column predetermines what should be emergent — a memory's self-relevance should grow organically through co-retrieval and co-activation with the self-anchor, not be assigned at creation time. The graph already captures this through spreading activation. (Cf. Korsgaard: identity is constituted through the ongoing act of reflective endorsement, not through categorical labeling.)
 
 ### F. Full system prompt replacement
 
@@ -294,9 +294,9 @@ Replace CC's system prompt entirely with Spotless-crafted instructions. Rejected
 2. Update CHECK constraint to `('episodic','fact')` only
 3. Archive existing monolithic identity blobs (they're episodic memories of reflection, historically)
 4. Update identity_node seed memories to concise anchors
-5. Remove `evolveIdentity()`, `evolveRelationship()` from dream-tools
-6. Update dream prompt for type classification and reflection pass
-7. Split context assembly: identity tag (graph walk) + knowledge tag (hippocampus)
+5. Remove `evolveIdentity()`, `evolveRelationship()` from digest-tools
+6. Update digest prompt for type classification and reflection pass
+7. Split context assembly: identity tag (graph walk) + knowledge tag (selector)
 8. Add system prompt augmentation to proxy
 9. Update preamble text
 
@@ -304,13 +304,13 @@ Replace CC's system prompt entirely with Spotless-crafted instructions. Rejected
 
 Identity serving (every human turn) is a simple row lookup — read 1-2 identity_node memories. Same cost as current `getIdentityNodes()`.
 
-Identity compilation (dreaming Phase 2, step 3) is the graph walk:
+Identity compilation (digesting Phase 2, step 3) is the graph walk:
 - Start: 1-2 anchor memories from identity_nodes
 - Follow: associations at strength >= 0.5 (typically few per node)
 - Collect: memories visited during walk, assemble into compiled summary
-- This runs during dreaming (background, not latency-sensitive), not on the request path
+- This runs during digesting (background, not latency-sensitive), not on the request path
 
-The graph walk cost has moved from every-request to every-dream-pass. With adaptive scheduling, dream passes run every 1-10 minutes depending on pressure — the amortized cost is negligible.
+The graph walk cost has moved from every-request to every-digest-pass. With adaptive scheduling, digest passes run every 1-10 minutes depending on pressure — the amortized cost is negligible.
 
 ## References
 

@@ -11,7 +11,7 @@
   },
   "author": "didgeoridoo",
   "homepage": "https://github.com/didgeoridoo/spotless",
-  "keywords": ["claude", "claude-code", "memory", "proxy", "neuromorphic", "sqlite"],
+  "keywords": ["claude", "claude-code", "memory", "proxy", "persistent", "sqlite"],
   "bin": {
     "spotless": "src/index.ts"
   },

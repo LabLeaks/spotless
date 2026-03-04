@@ -12,7 +12,7 @@ Stand up the Spotless HTTP reverse proxy that sits between Claude Code and the A
 
 - **PRD**: `_project/prds/spotless-prd.md`
 - **Runtime**: TypeScript on Bun
-- **What this sprint does NOT do**: No eidetic trace assembly, no hippocampus, no dreaming, no message rewriting. Pure pass-through + data capture.
+- **What this sprint does NOT do**: No history trace assembly, no selector, no digesting, no message rewriting. Pure pass-through + data capture.
 
 ## Definition of Done
 
@@ -222,7 +222,7 @@ Archive content as it flows through the proxy. This is the data capture that mak
 - message_groups are correctly assigned (all blocks from one API message share a group)
 - FTS5 index contains text, tool_use, and tool_result content (not thinking)
 - Subagent content is flagged with is_subagent = 1
-- Archival is sync — completes before the proxy proceeds with hippocampus (Sprint 2) or next request
+- Archival is sync — completes before the proxy proceeds with selector (Sprint 5) or next request
 - Content matches what actually flowed through (no corruption, no truncation)
 - Works with large responses (file reads returning thousands of lines)
 
@@ -292,9 +292,9 @@ End-to-end test that verifies the complete pass-through + archival pipeline.
 
 ## Deferred
 
-- **Message rewriting / eidetic trace assembly** — Sprint 2
-- **Hippocampus invocation** — Sprint 4
-- **Dreaming** — Sprint 3
+- **Message rewriting / history trace assembly** — Sprint 2
+- **Selector invocation** — Sprint 5
+- **Digesting** — Sprint 4
 - **Tier 2 schema** — Sprint 3
 - **Background/daemon mode** — Sprint 5
 - **Graceful degradation beyond basic error forwarding** — Sprint 5

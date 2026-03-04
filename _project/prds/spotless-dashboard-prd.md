@@ -5,9 +5,9 @@
 Spotless is invisible by design — Claude never knows it exists. But the *operator* also has no visibility into what's happening. There's no way to:
 - See if the proxy is running and healthy
 - Inspect an agent's memories, identity, and personality
-- Monitor hippocampus/dreaming performance
+- Monitor selector/digesting performance
 - Understand why the agent behaved a certain way
-- Browse the engram network and associations
+- Browse the memory graph and associations
 
 Currently: run SQL queries against `~/.spotless/agents/<name>/spotless.db` or read test output logs. This is fine for development but unusable for daily operation.
 
@@ -27,8 +27,8 @@ A lightweight local dashboard — either a macOS menu bar app or a local web UI 
 - List of all agents with:
   - Memory count (Tier 1 events, Tier 2 memories)
   - Identity summary (self-model, relationship model in full)
-  - Last dream pass: when, duration, what changed
-  - Last hippocampus run: latency, memories selected
+  - Last digest pass: when, duration, what changed
+  - Last selector run: latency, memories selected
   - DB size on disk
 
 ### Agent Detail: Memory Browser
@@ -37,26 +37,25 @@ A lightweight local dashboard — either a macOS menu bar app or a local web UI 
 - Filter by salience, recency, access count
 - View identity nodes with role labels
 - View supersession chains (correction history)
-- View core summary evolution chain
 
 ### Agent Detail: Identity & Personality
 - Current self-model (full text)
 - Current relationship model (full text)
-- Self-insights (reflect_on_self memories connected to self-model)
-- Significance-marked memories (somatic markers)
-- Identity evolution timeline (how self-model changed over time)
+- Self-concept facts (composable facts connected to identity anchors)
+- Significance-marked memories
+- Identity evolution timeline (how self-concept changed over time)
 
 ### Agent Detail: Diagnostics
-- Recent hippocampus runs: what was retrieved, how long, FTS5 hits vs spreading activation
-- Recent dream passes: operations performed, errors, duration
-- Retrieval log: what's queued for next dream pass
+- Recent selector runs: what was retrieved, how long, FTS5 hits vs spreading activation
+- Recent digest passes: operations performed, errors, duration
+- Retrieval log: what's queued for next digest pass
 - Raw event timeline: conversation flow with group boundaries
 
-### Dream Cycle Monitor
-- Per-agent dream schedule
-- Last N dream pass results
-- Memory creation/merge/prune/supersede counts over time
-- Identity ops over time
+### Digest Cycle Monitor
+- Per-agent digest schedule
+- Last N digest pass results
+- Memory creation/merge/supersede counts over time
+- Reflection ops over time
 
 ## Design Constraints
 
@@ -72,9 +71,9 @@ A lightweight local dashboard — either a macOS menu bar app or a local web UI 
 
 2. **Same process or separate?** Running inside the proxy process shares the DB connections but adds surface area. Separate process is cleaner isolation but needs its own DB access.
 
-3. **Graph visualization?** The engram network is a graph. Force-directed layout (d3-force, sigma.js) would make associations visible. Worth the complexity?
+3. **Graph visualization?** The memory graph is a graph. Force-directed layout (d3-force, sigma.js) would make associations visible. Worth the complexity?
 
-4. **Real-time updates?** SSE from the proxy to push live updates (new memories, hippocampus results) vs polling. SSE is more elegant but adds complexity to the proxy.
+4. **Real-time updates?** SSE from the proxy to push live updates (new memories, selector results) vs polling. SSE is more elegant but adds complexity to the proxy.
 
 ## Non-Goals
 
@@ -87,4 +86,4 @@ A lightweight local dashboard — either a macOS menu bar app or a local web UI 
 
 Likely 2 sprints:
 1. API endpoints + basic web UI (proxy status, agent list, memory browser)
-2. Identity view, diagnostics, graph visualization, dream cycle monitor
+2. Identity view, diagnostics, graph visualization, digest cycle monitor

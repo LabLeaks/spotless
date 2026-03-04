@@ -1,8 +1,10 @@
 # ADR-003: Memory Type Architecture
 
-**Status**: Accepted
+**Status**: Superseded by ADR-005
 **Date**: 2026-02-27
 **Supersedes**: Partial — rearchitects the flat `memories` table from Sprint 4-5. ADR-001 and ADR-002 remain valid as behavioral/structural decisions within the new type system.
+
+> **Note:** This ADR introduced the 4-type system (episodic/fact/affective/identity). ADR-005 simplified to 2 types (episodic/fact), removing affective and identity as separate types. Affect is carried by content text + salience; identity is structural (graph associations to identity_nodes anchors). See ADR-005 for the current architecture.
 
 ---
 
@@ -12,13 +14,13 @@ The current `memories` table is a flat bag. A distilled fact ("project uses Bun"
 
 This creates concrete problems:
 
-1. **Identity duplication**: `evolveIdentity` creates new memories for each evolution. Over 22 dream passes, 6 near-identical self-model statements accumulated. They can't be pruned (associations, salience too high) and consolidation doesn't merge them (Haiku never calls `merge_memories`). Identity is a *state*, not something you accumulate — but the schema treats it as accumulation.
+1. **Identity duplication**: `evolveIdentity` creates new memories for each evolution. Over 22 digest passes, 6 near-identical self-model statements accumulated. They can't be pruned (associations, salience too high) and consolidation doesn't merge them (Haiku never calls `merge_memories`). Identity is a *state*, not something you accumulate — but the schema treats it as accumulation.
 
 2. **Facts never get corrected cleanly**: `supersede_memory` demotes the old version with `[SUPERSEDED]` prefix at 0.1 salience, creates a new version, and adds a breadcrumb association. But the old row persists in FTS5, polluting search results. Facts should have current-state semantics — one active version, old versions archived out of search.
 
-3. **No affect processing**: There's no mechanism to capture emotional valence ("that was tense", "user was frustrated", "breakthrough moment"). Salience scores encode importance but not affect. Affective memories are what drive identity formation — without them, the identity pass operates on raw facts rather than lived experience.
+3. **No affect processing**: There's no mechanism to capture emotional valence ("that was tense", "user was frustrated", "breakthrough moment"). Salience scores encode importance but not affect. Affective memories are what drive identity formation — without them, the reflection pass operates on raw facts rather than lived experience.
 
-4. **Eidetic buffer grows forever**: `raw_events` is append-only with no lifecycle. Once consolidated into memories, the raw events still consume FTS5 index space. The eidetic trace builder budget-trims from the front for context assembly, but the underlying data never shrinks. Neurologically, eidetic memory is *short* — it's a processing buffer, not an archive.
+4. **History buffer grows forever**: `raw_events` is append-only with no lifecycle. Once consolidated into memories, the raw events still consume FTS5 index space. The history trace builder budget-trims from the front for context assembly, but the underlying data never shrinks.
 
 ---
 
@@ -31,17 +33,17 @@ Introduce a **type taxonomy** for memories with distinct lifecycle semantics. Tw
 
 Add an `archived_at` column for current-state types. When a fact or identity node is superseded, the old version gets archived (timestamped, excluded from FTS5 search) but preserved for provenance.
 
-Remove consolidated events from `raw_events_fts` after dreaming processes them. Recall (hippocampus) searches typed memory FTS5 instead.
+Remove consolidated events from `raw_events_fts` after digesting processes them. Recall (selector) searches typed memory FTS5 instead.
 
 ### Type Definitions
 
-#### Eidetic (Tier 1 — `raw_events`, unchanged)
+#### History Archive (Tier 1 — `raw_events`, unchanged)
 
 The processing buffer. Raw conversation events archived as content blocks.
 
 - **Lifecycle**: Append-only, kept forever as log
-- **FTS5**: Consolidated events removed from `raw_events_fts` after dreaming. Only unconsolidated events remain searchable (by dreaming only)
-- **Not directly queried by recall** — hippocampus searches typed memories
+- **FTS5**: Consolidated events removed from `raw_events_fts` after digesting. Only unconsolidated events remain searchable (by digesting only)
+- **Not directly queried by recall** — selector searches typed memories
 
 #### Episodic (Tier 2 — permanent)
 
@@ -53,7 +55,7 @@ Event memories. "What happened." The agent's experiences.
 
 **Lifecycle**: Permanent. Created during consolidation. Never auto-deleted. Can be merged if overlapping.
 **Salience**: 0.5-0.8 range. Decays only if never accessed.
-**Pipeline**: eidetic → episodic (dreaming consolidation extracts episodes from raw events)
+**Pipeline**: history → episodic (digest consolidation extracts episodes from raw events)
 
 #### Atomic Facts (Tier 2 — current-state)
 
@@ -65,7 +67,7 @@ Distilled knowledge. "What's true right now."
 
 **Lifecycle**: Current-state. One active version per fact. When corrected/superseded, old version gets `archived_at` timestamp — preserved for provenance but excluded from FTS5 search.
 **Salience**: 0.5-0.9 depending on importance. Corrections get high salience.
-**Pipeline**: eidetic → atomic (dreaming extracts facts, checks for existing, supersedes if corrected)
+**Pipeline**: history → atomic (digesting extracts facts, checks for existing, supersedes if corrected)
 
 #### Affective (Tier 2 — permanent)
 
@@ -77,7 +79,7 @@ Emotional/valence memories. "What mattered." What shaped the agent.
 
 **Lifecycle**: Permanent. Created during consolidation when affect is detected in raw events. Never auto-deleted.
 **Salience**: 0.6-0.9. High affect events get high salience.
-**Pipeline**: eidetic → affective (dreaming detects emotional valence in raw events)
+**Pipeline**: history → affective (digesting detects emotional valence in raw events)
 
 #### Identity (Tier 2 — current-state)
 
@@ -88,7 +90,7 @@ Self-model and relationship model. "Who I am." Derived from affective and episod
 
 **Lifecycle**: Current-state. One active version per role (self, relationship). When evolved, old version archived. Only the current version participates in FTS5 search and recall seeding.
 **Salience**: Always high (0.85-0.9). Identity nodes seed recall at score 999 (unchanged from current).
-**Pipeline**: affective + episodic → identity (identity pass synthesizes across accumulated experiences)
+**Pipeline**: affective + episodic → identity (reflection pass synthesizes across accumulated experiences)
 
 ### Schema Changes
 
@@ -122,10 +124,10 @@ associations table (unchanged):
 ### Processing Pipeline
 
 ```
-                    eidetic buffer (raw_events)
+                    history archive (raw_events)
                             │
                     ┌───────┴───────┐
-                    │   DREAMING    │
+                    │  DIGESTING   │
                     │  (Phase 1)    │
                     └───────┬───────┘
                             │
@@ -138,9 +140,9 @@ associations table (unchanged):
               └─────────────┼─────────────┘
                             │
                     ┌───────┴───────┐
-                    │   DREAMING    │
+                    │  DIGESTING   │
                     │  (Phase 2)    │
-                    │  Identity     │
+                    │  Reflection   │
                     └───────┬───────┘
                             │
                             ▼
@@ -148,7 +150,7 @@ associations table (unchanged):
                      (current-state)
 ```
 
-Phase 1 reads eidetic buffer and produces three typed outputs:
+Phase 1 reads history archive and produces three typed outputs:
 - **Episodic**: narrative events worth remembering
 - **Atomic**: distilled facts, checked against existing facts, superseded if corrected
 - **Affective**: emotional/valence markers from conversations
@@ -172,15 +174,15 @@ This replaces the current `[SUPERSEDED]` prefix hack and the `evolveNode` demote
 
 ### Recall Changes
 
-Hippocampus recall pipeline (FTS5 → spreading activation → scoring) changes minimally:
+Selector recall pipeline (FTS5 → spreading activation → scoring) changes minimally:
 
 - FTS5 now searches typed memories (episodic, fact, affective, active identity) — archived rows excluded by trigger
-- `raw_events_fts` no longer used by anything (consolidated events removed, unconsolidated only used by dreaming via SQL group queries)
+- `raw_events_fts` no longer used by anything (consolidated events removed, unconsolidated only used by digesting via SQL group queries)
 - Identity nodes still seed at score 999
 - Scoring unchanged: `α·recency + β·salience`
 - Affective memories participate naturally — high salience, permanent, connected to related episodic/fact memories via associations
 
-### Dreaming Prompt Changes
+### Digest Prompt Changes
 
 Phase 1 (consolidation) prompt gets a typed `create_memory` tool:
 
@@ -192,11 +194,11 @@ create_memory:
   source_event_ids: [1, 2, 3]
 ```
 
-The dreamer must classify each new memory. This is a lightweight LLM judgment — "is this an event, a fact, or an emotional response?" — not a hard classification problem.
+The digester must classify each new memory. This is a lightweight LLM judgment — "is this an event, a fact, or an emotional response?" — not a hard classification problem.
 
 `supersede_memory` becomes `replace_fact` or similar — explicitly for current-state types. Archives old, creates new, transfers associations.
 
-Phase 2 (identity) tools unchanged conceptually — `evolve_identity` and `evolve_relationship` now use the current-state replacement semantics (archive old, no demote/strip/chain).
+Phase 2 (reflection) tools unchanged conceptually — `evolve_identity` and `evolve_relationship` now use the current-state replacement semantics (archive old, no demote/strip/chain).
 
 ---
 
@@ -207,21 +209,21 @@ Phase 2 (identity) tools unchanged conceptually — `evolve_identity` and `evolv
 - **Identity duplication eliminated**: Identity is current-state. One active self-model, one active relationship model. Old versions archived, not accumulated.
 - **Fact correction is clean**: `archived_at` excludes old versions from FTS5. No `[SUPERSEDED]` prefix hack. No stale facts polluting search.
 - **Affect drives identity**: Affective memories provide the experiential substrate that identity is built from. "I felt the weight of a bad recommendation" → "I tend to over-recommend complex solutions." This is psychologically accurate.
-- **Eidetic buffer semantically shrinks**: Consolidated events leave FTS5. Dreaming naturally works from unconsolidated events. No FTS5 pollution from old raw data.
+- **History buffer semantically shrinks**: Consolidated events leave FTS5. Digesting naturally works from unconsolidated events. No FTS5 pollution from old raw data.
 - **Recall improves**: FTS5 searches typed memories with clear lifecycle. No stale/archived content in results. Affective memories add emotional context to recall.
 - **Backward compatible**: Existing memories can be migrated with `type='episodic'` default. Identity nodes already point at memories. Schema migration is additive.
 
 ### Negative
 
-- **Classification burden on Haiku**: Dreaming must now decide type for each memory. Risk: Haiku might default to one type (like it currently defaults to `create_memory` over `merge_memories`). Mitigation: make the type decision simple — the prompt can give clear heuristics ("if it's about what happened → episodic, if it's a standalone fact → fact, if it describes feeling/tone/tension → affective").
-- **Migration complexity**: Existing memories need type classification. Could be done by a one-time migration dream pass, or conservatively tagged `episodic` (safest default for permanent type).
+- **Classification burden on Haiku**: Digesting must now decide type for each memory. Risk: Haiku might default to one type (like it currently defaults to `create_memory` over `merge_memories`). Mitigation: make the type decision simple — the prompt can give clear heuristics ("if it's about what happened → episodic, if it's a standalone fact → fact, if it describes feeling/tone/tension → affective").
+- **Migration complexity**: Existing memories need type classification. Could be done by a one-time migration digest pass, or conservatively tagged `episodic` (safest default for permanent type).
 - **More schema surface area**: Two new columns, FTS5 trigger changes, archive semantics. Modest increase in complexity.
 
 ### Neutral
 
 - **Associations unchanged**: The graph still works the same way. Edges can connect any types. Spreading activation is type-agnostic.
-- **Eidetic trace builder unchanged**: Still reads raw_events by message_group, still budget-trims. Doesn't care about FTS5.
-- **Hippocampus orchestration unchanged**: Still spawns Haiku, still returns memory IDs. Type-awareness is in the prompt, not the orchestrator.
+- **History trace builder unchanged**: Still reads raw_events by message_group, still budget-trims. Doesn't care about FTS5.
+- **Selector orchestration unchanged**: Still spawns Haiku, still returns memory IDs. Type-awareness is in the prompt, not the orchestrator.
 
 ---
 
@@ -231,7 +233,7 @@ Phase 2 (identity) tools unchanged conceptually — `evolve_identity` and `evolv
 
 Just make Haiku better at merging/pruning by improving the prompt.
 
-**Why rejected**: We tried. 0 merges and 0 prunes across 22 dream passes. The prompt says to merge and prune; Haiku doesn't. The problem is structural — the schema doesn't distinguish things that should accumulate from things that should be replaced. No amount of prompt engineering fixes a type error in the data model.
+**Why rejected**: We tried. 0 merges and 0 prunes across 22 digest passes. The prompt says to merge and prune; Haiku doesn't. The problem is structural — the schema doesn't distinguish things that should accumulate from things that should be replaced. No amount of prompt engineering fixes a type error in the data model.
 
 ### B: Separate tables per type (episodic, facts, affective, identity)
 
@@ -259,9 +261,9 @@ Use embedding similarity to detect and merge near-duplicates mechanically.
 2. **Classify identity nodes**: Any memory pointed to by `identity_nodes` gets `type='identity'`.
 3. **Classify obvious facts**: Memories with `[SUPERSEDED]` prefix get `type='fact'`, `archived_at=created_at`.
 4. **FTS5 rebuild**: Recreate `memories_fts` with trigger that excludes `archived_at IS NOT NULL`.
-5. **Update dream tools**: `create_memory` accepts `type` parameter. `evolveNode` uses archive semantics. `supersede_memory` uses archive semantics.
-6. **Update dream prompt**: Phase 1 produces typed outputs. Simple classification heuristic in prompt.
-7. **Remove `raw_events_fts` consolidation cleanup**: After dreaming, delete FTS5 entries for consolidated events.
+5. **Update digest tools**: `create_memory` accepts `type` parameter. `evolveNode` uses archive semantics. `supersede_memory` uses archive semantics.
+6. **Update digest prompt**: Phase 1 produces typed outputs. Simple classification heuristic in prompt.
+7. **Remove `raw_events_fts` consolidation cleanup**: After digesting, delete FTS5 entries for consolidated events.
 
 Steps 1-4 can be done in one migration. Steps 5-7 are the sprint work.
 
@@ -269,8 +271,8 @@ Steps 1-4 can be done in one migration. Steps 5-7 are the sprint work.
 
 ## References
 
-- ADR-001: Neuromorphic Memory Behaviors (salience, pattern separation, substance filter — all still apply per-type)
-- ADR-002: Working Self Critique (two-phase dreaming, homunculus fix — Phase 2 now explicitly produces `type='identity'`)
+- ADR-001: Persistent Memory Behaviors (salience, pattern separation, substance filter — all still apply per-type)
+- ADR-002: Working Self Critique (two-phase digesting, homunculus fix — Phase 2 now explicitly produces `type='identity'`)
 - Conway's Self-Memory System: episodic ↔ working self distinction maps to episodic ↔ identity types
 - Tulving (1972): Episodic vs semantic memory distinction. Our episodic/atomic split follows this taxonomy.
 - Damasio's somatic marker hypothesis: affective memories as the substrate for decision-making and identity. `markSignificance` becomes affect-typed memory creation.

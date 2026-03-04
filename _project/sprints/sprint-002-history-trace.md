@@ -1,24 +1,24 @@
-# Sprint 002: Eidetic Context Assembly
+# Sprint 002: History Context Assembly
 
 ## Status: Complete
 
 ## Goal
 
-The proxy rewrites the `messages` array on human turns. Instead of forwarding CC's messages array, it builds a new one from Tier 1: recent conversation turns rendered as real user/assistant message pairs (the "eidetic prefix"), followed by the user's current message. This is the self-accelerating inflection point — after this sprint, Spotless gives CC persistent conversation history that survives compaction.
+The proxy rewrites the `messages` array on human turns. Instead of forwarding CC's messages array, it builds a new one from Tier 1: recent conversation turns rendered as real user/assistant message pairs (the "history prefix"), followed by the user's current message. This is the self-accelerating inflection point — after this sprint, Spotless gives CC persistent conversation history that survives compaction.
 
 ## Context
 
 - **PRD**: `_project/prds/spotless-prd.md` (Tier 3: Active Context, Layered Message Format)
 - **Depends on**: Sprint 1 (proxy + archival — done)
-- **What this sprint does NOT do**: No hippocampus, no memory suffix, no Tier 2. Just the eidetic prefix from Tier 1.
+- **What this sprint does NOT do**: No selector, no memory suffix, no Tier 2. Just the history prefix from Tier 1.
 
 ## Definition of Done
 
 1. ✅ On human turns, the proxy builds messages from Tier 1 (recent raw_events) instead of forwarding CC's array
 2. ✅ Tool loops append onto the cached base correctly
-3. ✅ Eidetic trace grows monotonically within a session (newest turn appended, cache-friendly)
+3. ✅ History trace grows monotonically within a session (newest turn appended, cache-friendly)
 4. ✅ Oldest turns trimmed from front when approaching token budget
-5. ✅ Eidetic trace recovered from Tier 1 on proxy restart
+5. ✅ History trace recovered from Tier 1 on proxy restart
 6. ✅ Subagents still pass through unchanged
 7. ✅ Verified with real Claude Code — multi-turn conversation, tool use, cross-session memory, session boundary awareness
 
@@ -26,17 +26,17 @@ The proxy rewrites the `messages` array on human turns. Instead of forwarding CC
 
 ## Tasks
 
-### TASK-001: Eidetic Trace Builder ✅
-Built `src/eidetic.ts` — queries raw_events, groups by message_group, reconstructs Message[] with proper content blocks. Thinking blocks excluded, subagent content excluded, system-reminders filtered.
+### TASK-001: History Trace Builder ✅
+Built `src/history.ts` — queries raw_events, groups by message_group, reconstructs Message[] with proper content blocks. Thinking blocks excluded, subagent content excluded, system-reminders filtered.
 
 ### TASK-002: Token Budget Estimation ✅
-Built `src/tokens.ts` — ~4 chars/token heuristic, EIDETIC_BUDGET = 144,000. Trims from front.
+Built `src/tokens.ts` — ~4 chars/token heuristic, HISTORY_BUDGET = 144,000. Trims from front.
 
 ### TASK-003: Message Rewriting in Proxy ✅
-Wired into proxy.ts on human turns. Eidetic prefix built before archiving current message, current message appended at end.
+Wired into proxy.ts on human turns. History prefix built before archiving current message, current message appended at end.
 
-### TASK-004: Eidetic Trace Recovery on Restart ✅
-Works automatically — buildEideticTrace queries DB on every human turn. Restart = fresh proxy state but full DB history.
+### TASK-004: History Trace Recovery on Restart ✅
+Works automatically — buildHistoryTrace queries DB on every human turn. Restart = fresh proxy state but full DB history.
 
 ### TASK-005: Real Claude Code Integration Test ✅
 Verified: told Claude "personal facts about the project" in one invocation, asked in separate invocation, got correct answer. Cross-session memory works.
@@ -46,10 +46,10 @@ Verified: told Claude "personal facts about the project" in one invocation, aske
 ## Additional Work (discovered during implementation)
 
 ### Session Boundary Markers ✅
-When `isNewConversation` fires, archives `<session-boundary />` marker to DB. Eidetic builder detects these and injects `--- new session ---` dividers into the next user message. Adds `[End of conversation history — new session starting]` assistant message when boundary is at the end (before current request).
+When `isNewConversation` fires, archives `<session-boundary />` marker to DB. History builder detects these and injects `--- new session ---` dividers into the next user message. Adds `[End of conversation history — new session starting]` assistant message when boundary is at the end (before current request).
 
 ### Memory System Preamble ✅
-Eidetic trace prepends a user/assistant pair explaining the synthetic memory environment: what the messages are, what session dividers mean, how to reference prior context naturally. Model correctly identifies prior sessions: "From our **previous session**, we looked at..."
+History trace prepends a user/assistant pair explaining the synthetic memory environment: what the messages are, what session dividers mean, how to reference prior context naturally. Model correctly identifies prior sessions: "From our **previous session**, we looked at..."
 
 ### Tool Pairing Validation ✅
 Validates tool_use/tool_result pairs across the full message sequence. Skips broken pairs (orphaned tool_uses from interrupted sessions or routing bugs) instead of truncating everything. Prevents API 400 "tool use concurrency" errors.
@@ -73,7 +73,7 @@ Removes consecutive identical user messages (from retried failed requests).
 
 ## Key Learnings
 
-- **Model treats eidetic prefix as "this session"** unless explicitly framed. The preamble + session boundary markers + end-of-history assistant message are all needed for the model to correctly attribute prior context to previous sessions.
+- **Model treats history prefix as "this session"** unless explicitly framed. The preamble + session boundary markers + end-of-history assistant message are all needed for the model to correctly attribute prior context to previous sessions.
 - **Self-reinforcing wrong answers** — if the model says "I have no cross-session memory" and that response gets archived, future sessions see the model's own denial and reinforce it. Clean test data matters.
 - **`bun link` creates symlinks, not copies** — code changes propagate immediately to the global install after `bun link`, but the proxy process must be restarted.
 - **Bun's fetch may re-add Accept-Encoding** — deleting the header isn't enough, must explicitly set to `identity`.
@@ -83,7 +83,7 @@ Removes consecutive identical user messages (from retried failed requests).
 ## Progress Log
 
 ### 2026-02-24
-- Implemented eidetic.ts and tokens.ts
+- Implemented history.ts and tokens.ts
 - Wired into proxy, tested with real CC
 - Cross-session memory verified ("personal facts about the project")
 - Fixed gzip, thinking signature, multi-project DB routing bugs
