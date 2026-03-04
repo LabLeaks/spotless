@@ -12,7 +12,7 @@ import { openReadonlyDb } from "./db.ts";
 import { queryMemories, getAssociations } from "./digest-tools.ts";
 import { getIdentityNodes } from "./recall.ts";
 import type { AgentContext, ProxyStats } from "./proxy.ts";
-import { getConsolidationStatus, getConsolidationPressure, getPressureLevel, getIntervalForPressure } from "./consolidation.ts";
+import { getConsolidationStatus, getConsolidationPressure, getPressureLevel } from "./consolidation.ts";
 
 // --- Route handler ---
 
@@ -301,7 +301,6 @@ function apiAgentSelector(db: Database, limit: number) {
 function apiAgentConsolidation(db: Database) {
   const status = getConsolidationStatus(db);
   const level = getPressureLevel(status.pressure);
-  const interval = getIntervalForPressure(status.pressure);
 
   return {
     watermark: status.watermark,
@@ -311,10 +310,6 @@ function apiAgentConsolidation(db: Database) {
     totalGroups: status.totalGroups,
     consolidatedGroups: status.consolidatedGroups,
     unconsolidatedGroups: status.totalGroups - status.consolidatedGroups,
-    expectedIntervalMs: interval,
-    expectedInterval: interval === 0 ? "immediate" :
-      interval < 60000 ? `${interval / 1000}s` :
-      `${interval / 60000}min`,
   };
 }
 
@@ -905,7 +900,6 @@ function renderAgentPage(agentName: string): string {
           html += '<div class="stat-row"><span class="stat-label">Unconsolidated tokens</span><span class="stat-value">' + Math.round(data.unconsolidatedTokens / 1000) + 'k</span></div>';
           html += '<div class="stat-row"><span class="stat-label">Groups consolidated</span><span class="stat-value">' + data.consolidatedGroups + ' / ' + data.totalGroups + '</span></div>';
           html += '<div class="stat-row"><span class="stat-label">Unconsolidated groups</span><span class="stat-value">' + data.unconsolidatedGroups + '</span></div>';
-          html += '<div class="stat-row"><span class="stat-label">Digest interval</span><span class="stat-value">' + data.expectedInterval + '</span></div>';
           html += '</div>';
           html += '</div>';
 

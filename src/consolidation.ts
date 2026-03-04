@@ -14,14 +14,6 @@ import { HISTORY_BUDGET } from "./tokens.ts";
 export const PRESSURE_MODERATE = 0.6;
 export const PRESSURE_HIGH = 0.85;
 
-// --- Digest interval scheduling ---
-
-export const PRESSURE_ELEVATED = 0.3;
-
-export const DIGEST_INTERVAL_RELAXED = 10 * 60 * 1000;    // 10min, pressure < 30%
-export const DIGEST_INTERVAL_NORMAL = 3 * 60 * 1000;      // 3min, 30-60%
-export const DIGEST_INTERVAL_AGGRESSIVE = 60 * 1000;       // 1min, 60-85%
-
 // --- Types ---
 
 export type PressureLevel = "none" | "moderate" | "high";
@@ -45,13 +37,6 @@ export function getPressureLevel(pressure: number): PressureLevel {
   if (pressure >= PRESSURE_HIGH) return "high";
   if (pressure >= PRESSURE_MODERATE) return "moderate";
   return "none";
-}
-
-export function getIntervalForPressure(pressure: number): number {
-  if (pressure >= PRESSURE_HIGH) return 0;
-  if (pressure >= PRESSURE_MODERATE) return DIGEST_INTERVAL_AGGRESSIVE;
-  if (pressure >= PRESSURE_ELEVATED) return DIGEST_INTERVAL_NORMAL;
-  return DIGEST_INTERVAL_RELAXED;
 }
 
 export function buildPressureSignal(pressure: number, unconsolidatedTokens: number): string {

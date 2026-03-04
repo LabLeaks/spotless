@@ -1,25 +1,35 @@
 {
-  "name": "spotless",
+  "name": "@lableaks/spotless",
   "version": "0.1.0",
+  "description": "Persistent memory for Claude Code — local proxy, zero config, SQLite-backed",
   "module": "src/index.ts",
   "type": "module",
   "private": false,
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/didgeoridoo/spotless.git"
+    "url": "https://github.com/lableaks/spotless.git"
   },
-  "author": "didgeoridoo",
-  "homepage": "https://github.com/didgeoridoo/spotless",
+  "author": "lableaks",
+  "homepage": "https://github.com/lableaks/spotless",
   "keywords": ["claude", "claude-code", "memory", "proxy", "persistent", "sqlite"],
   "bin": {
     "spotless": "src/index.ts"
   },
+  "engines": {
+    "bun": ">=1.0"
+  },
+  "files": [
+    "src/",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "start": "bun run src/index.ts start",
     "dev": "bun --watch run src/index.ts start",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun test && bun run typecheck"
   },
   "devDependencies": {
     "@types/bun": "latest"

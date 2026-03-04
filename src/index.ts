@@ -199,11 +199,6 @@ function cmdStart(port: number, noDigest: boolean): void {
     proxy.onHistoryTrimmed = (agentName: string) => {
       digestLoop!.escalate(agentName);
     };
-
-    // Wire agent init: schedule new agents for digesting on first request
-    proxy.onAgentInit = (agentName: string) => {
-      digestLoop!.registerAgent(agentName);
-    };
   }
 
   // Graceful shutdown

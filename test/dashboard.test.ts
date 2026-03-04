@@ -444,10 +444,9 @@ describe("consolidation API function", () => {
     cleanup.push(path);
 
     // Import and call directly since we can't route through handler without a real agent
-    const { getConsolidationStatus, getPressureLevel, getIntervalForPressure } = require("../src/consolidation.ts");
+    const { getConsolidationStatus, getPressureLevel } = require("../src/consolidation.ts");
     const status = getConsolidationStatus(db);
     const level = getPressureLevel(status.pressure);
-    const interval = getIntervalForPressure(status.pressure);
 
     expect(status.pressure).toBe(0);
     expect(status.watermark).toBeNull();
@@ -455,7 +454,6 @@ describe("consolidation API function", () => {
     expect(status.totalGroups).toBe(0);
     expect(status.consolidatedGroups).toBe(0);
     expect(level).toBe("none");
-    expect(interval).toBe(10 * 60 * 1000);
 
     db.close();
   });

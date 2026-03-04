@@ -10,7 +10,7 @@
 
 ## Problem Statement
 
-The current `memories` table is a flat bag. A distilled fact ("project uses Bun"), a self-model statement ("I am nova, instantiated within a reductionist framework..."), an episodic recollection ("I recommended MongoDB and watched it fail"), and an emotional valence marker ("that conversation was tense") all live in the same table with the same schema. The only differentiation is salience score and free-text content.
+The current `memories` table is a flat bag. A distilled fact ("project uses Bun"), a self-model statement ("I am an agent instantiated within a reductionist framework..."), an episodic recollection ("I recommended MongoDB and watched it fail"), and an emotional valence marker ("that conversation was tense") all live in the same table with the same schema. The only differentiation is salience score and free-text content.
 
 This creates concrete problems:
 

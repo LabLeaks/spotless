@@ -6,7 +6,7 @@
 
 ## Context
 
-ADR-003 introduced typed memories (episodic/fact/affective/identity) with archive lifecycle. Implementation added the schema but not the behavioral changes. Real-world testing with nova revealed deeper architectural issues:
+ADR-003 introduced typed memories (episodic/fact/affective/identity) with archive lifecycle. Implementation added the schema but not the behavioral changes. Real-world testing revealed deeper architectural issues:
 
 1. **Identity as monolithic blob**: `evolveIdentity()` creates a single memory encoding EVERYTHING about the agent's self-concept. This is fragile (one bad digest rewrites all), non-compositional, and architecturally wrong — identity is a computation over memories, not a stored thing.
 
@@ -16,7 +16,7 @@ ADR-003 introduced typed memories (episodic/fact/affective/identity) with archiv
 
 4. **Mixed context assembly**: `<your memories>` lumps identity, facts, and episodic memories into one undifferentiated tag. The agent can't distinguish "who I am" from "what I know" from "what happened."
 
-5. **Agent doesn't understand its memory architecture**: Nova tried to read CLAUDE.md to find out who it is, because nothing told it that its memories are injected into its messages by Spotless.
+5. **Agent doesn't understand its memory architecture**: The agent tried to read CLAUDE.md to find out who it is, because nothing told it that its memories are injected into its messages by Spotless.
 
 ### Research basis
 

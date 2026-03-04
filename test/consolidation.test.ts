@@ -3,16 +3,12 @@ import { Database } from "bun:sqlite";
 import { openDb, initSchema } from "../src/db.ts";
 import {
   getPressureLevel,
-  getIntervalForPressure,
   buildPressureSignal,
   getWatermark,
   getConsolidationPressure,
   getConsolidationStatus,
   PRESSURE_MODERATE,
   PRESSURE_HIGH,
-  DIGEST_INTERVAL_RELAXED,
-  DIGEST_INTERVAL_NORMAL,
-  DIGEST_INTERVAL_AGGRESSIVE,
 } from "../src/consolidation.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,31 +38,6 @@ describe("pressure level", () => {
     expect(getPressureLevel(0.85)).toBe("high");
     expect(getPressureLevel(0.95)).toBe("high");
     expect(getPressureLevel(1.2)).toBe("high");
-  });
-});
-
-describe("interval for pressure", () => {
-  test("returns relaxed for low pressure", () => {
-    expect(getIntervalForPressure(0)).toBe(DIGEST_INTERVAL_RELAXED);
-    expect(getIntervalForPressure(0.1)).toBe(DIGEST_INTERVAL_RELAXED);
-    expect(getIntervalForPressure(0.29)).toBe(DIGEST_INTERVAL_RELAXED);
-  });
-
-  test("returns normal for moderate-low pressure", () => {
-    expect(getIntervalForPressure(0.3)).toBe(DIGEST_INTERVAL_NORMAL);
-    expect(getIntervalForPressure(0.5)).toBe(DIGEST_INTERVAL_NORMAL);
-    expect(getIntervalForPressure(0.59)).toBe(DIGEST_INTERVAL_NORMAL);
-  });
-
-  test("returns aggressive for moderate-high pressure", () => {
-    expect(getIntervalForPressure(0.6)).toBe(DIGEST_INTERVAL_AGGRESSIVE);
-    expect(getIntervalForPressure(0.7)).toBe(DIGEST_INTERVAL_AGGRESSIVE);
-    expect(getIntervalForPressure(0.84)).toBe(DIGEST_INTERVAL_AGGRESSIVE);
-  });
-
-  test("returns 0 (immediate) for high pressure", () => {
-    expect(getIntervalForPressure(0.85)).toBe(0);
-    expect(getIntervalForPressure(1.0)).toBe(0);
   });
 });
 

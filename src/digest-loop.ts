@@ -1,14 +1,14 @@
 /**
- * Background digest loop — adaptive scheduling based on consolidation pressure.
+ * Background digest loop — escalation-only.
  *
- * Replaces fixed setInterval with setTimeout-after-completion.
- * After each digest pass, reads pressure from DigestResult and schedules
- * the next pass accordingly. Per-agent state tracks timeouts and pending
- * escalations so no triggers are dropped.
+ * Digesting is triggered by:
+ * 1. Escalation from the proxy when consolidation pressure is high and history is being trimmed
+ * 2. Manual `spotless digest` command (via triggerNow)
+ *
+ * No periodic polling — digesting only runs when demanded.
  */
 
 import { runDigestPass } from "./digester.ts";
-import { getIntervalForPressure } from "./consolidation.ts";
 import type { DigestResult } from "./types.ts";
 
 export interface DigestLoopConfig {
@@ -21,12 +21,6 @@ export interface DigestLoop {
   stop(): void;
   triggerNow(agentName?: string): Promise<DigestResult[]>;
   escalate(agentName: string): void;
-  registerAgent(agentName: string): void;
-}
-
-interface AgentState {
-  timeout: ReturnType<typeof setTimeout> | null;
-  pendingEscalate: boolean;
 }
 
 export function createDigestLoop(config?: DigestLoopConfig): DigestLoop {
@@ -36,22 +30,12 @@ export function createDigestLoop(config?: DigestLoopConfig): DigestLoop {
   let getAgentNamesFn: (() => string[]) | null = null;
   let running = false;
   const digesting = new Set<string>();
-  const agentStates = new Map<string, AgentState>();
-
-  function getOrCreateState(agentName: string): AgentState {
-    let state = agentStates.get(agentName);
-    if (!state) {
-      state = { timeout: null, pendingEscalate: false };
-      agentStates.set(agentName, state);
-    }
-    return state;
-  }
+  const pendingEscalations = new Set<string>();
 
   async function digestAgent(agentName: string): Promise<DigestResult> {
     if (digesting.has(agentName)) {
       // Mark escalation pending — will be picked up after current digest finishes
-      const state = getOrCreateState(agentName);
-      state.pendingEscalate = true;
+      pendingEscalations.add(agentName);
       return {
         operationsRequested: 0,
         operationsExecuted: 0,
@@ -94,52 +78,15 @@ export function createDigestLoop(config?: DigestLoopConfig): DigestLoop {
       return result;
     } finally {
       digesting.delete(agentName);
-    }
-  }
 
-  function scheduleAgent(agentName: string, intervalMs: number): void {
-    if (!running) return;
-    const state = getOrCreateState(agentName);
-
-    // Clear any existing timeout
-    if (state.timeout) {
-      clearTimeout(state.timeout);
-      state.timeout = null;
-    }
-
-    const label = intervalMs === 0 ? "immediate" :
-      intervalMs < 60000 ? `${intervalMs / 1000}s` :
-      `${intervalMs / 60000}min`;
-    console.log(`[digest] ${agentName}: next pass in ${label}`);
-
-    const run = () => {
-      state.timeout = null;
-      digestAgent(agentName).then((result) => {
-        if (!running) return;
-
-        // Check for pending escalation
-        const s = getOrCreateState(agentName);
-        if (s.pendingEscalate) {
-          s.pendingEscalate = false;
-          scheduleAgent(agentName, 0);
-        } else {
-          const nextInterval = getIntervalForPressure(result.pressure);
-          scheduleAgent(agentName, nextInterval);
-        }
-      }).catch((err) => {
-        console.error(`[digest] ${agentName} error:`, err);
-        if (running) {
-          // On error, schedule a relaxed retry
-          scheduleAgent(agentName, getIntervalForPressure(0));
-        }
-      });
-    };
-
-    if (intervalMs === 0) {
-      // Immediate — use setImmediate-like behavior to avoid stack buildup
-      state.timeout = setTimeout(run, 0);
-    } else {
-      state.timeout = setTimeout(run, intervalMs);
+      // If an escalation came in while digesting, trigger another pass
+      if (running && pendingEscalations.has(agentName)) {
+        pendingEscalations.delete(agentName);
+        console.log(`[digest] ${agentName}: running queued escalation`);
+        digestAgent(agentName).catch((err) => {
+          console.error(`[digest] ${agentName} queued escalation error:`, err);
+        });
+      }
     }
   }
 
@@ -148,26 +95,12 @@ export function createDigestLoop(config?: DigestLoopConfig): DigestLoop {
       if (running) return;
       running = true;
       getAgentNamesFn = getAgentNames;
-
-      console.log("[digest] Background digesting started (adaptive scheduling)");
-
-      // Initial sweep: schedule all known agents with relaxed interval
-      const agents = getAgentNames();
-      for (const name of agents) {
-        scheduleAgent(name, getIntervalForPressure(0));
-      }
+      console.log("[digest] Background digesting enabled (escalation-only)");
     },
 
     stop() {
       running = false;
-      for (const [, state] of agentStates) {
-        if (state.timeout) {
-          clearTimeout(state.timeout);
-          state.timeout = null;
-        }
-        state.pendingEscalate = false;
-      }
-      agentStates.clear();
+      pendingEscalations.clear();
       console.log("[digest] Background digesting stopped");
     },
 
@@ -175,23 +108,14 @@ export function createDigestLoop(config?: DigestLoopConfig): DigestLoop {
       if (!running) return;
 
       if (digesting.has(agentName)) {
-        // Agent is currently digesting — queue follow-up
-        const state = getOrCreateState(agentName);
-        state.pendingEscalate = true;
+        pendingEscalations.add(agentName);
         console.log(`[digest] ${agentName}: escalation queued (currently digesting)`);
       } else {
-        // Agent is idle — trigger immediately (cancels any scheduled timeout)
         console.log(`[digest] ${agentName}: escalation — triggering immediate digest`);
-        scheduleAgent(agentName, 0);
+        digestAgent(agentName).catch((err) => {
+          console.error(`[digest] ${agentName} escalation error:`, err);
+        });
       }
-    },
-
-    registerAgent(agentName: string): void {
-      if (!running) return;
-      // No-op if agent already scheduled
-      if (agentStates.has(agentName)) return;
-      console.log(`[digest] Scheduling agent: ${agentName}`);
-      scheduleAgent(agentName, getIntervalForPressure(0));
     },
 
     async triggerNow(agentName?: string): Promise<DigestResult[]> {

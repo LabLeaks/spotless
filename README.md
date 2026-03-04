@@ -2,6 +2,8 @@
 
 Persistent memory for Claude Code.
 
+> **v0.1.0 — Early release.** The core works but expect breaking changes. Back up `~/.spotless/` if you have data you care about.
+
 ## What it does
 
 - **Remembers across sessions** — your agent knows what you discussed yesterday, last week, last month
@@ -11,16 +13,30 @@ Persistent memory for Claude Code.
 
 Spotless is a local reverse proxy that sits between Claude Code and Anthropic's API. It archives every conversation to per-agent SQLite, selects and injects relevant memories each turn, and consolidates raw data into a structured memory graph in the background. Claude doesn't know it's there — it just remembers.
 
+## Requirements
+
+- [Bun](https://bun.sh) >= 1.0
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with a Claude Max subscription
+- macOS or Linux
+
 ## Quick start
 
-**Prerequisites:** [Bun](https://bun.sh) >= 1.0, [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with a Claude Max subscription.
+### Install from npm
 
 ```bash
-git clone https://github.com/didgeoridoo/spotless.git
+bun add -g @lableaks/spotless
+```
+
+### Or build from source
+
+```bash
+git clone https://github.com/lableaks/spotless.git
 cd spotless
 bun install
 bun link
 ```
+
+### Run
 
 ```bash
 spotless start
@@ -51,7 +67,7 @@ While the proxy is running, open `http://localhost:9000/_dashboard/` to browse a
 
 ## Agents
 
-Memory is keyed by **agent name**, not project directory. The same agent remembers across all projects. Storage lives at `~/.spotless/agents/<name>/spotless.db`.
+Memory is keyed by **agent name**, not project directory. The same agent remembers across all projects. Data is stored at `~/.spotless/agents/<name>/spotless.db`.
 
 ```bash
 spotless code --agent wren          # use agent "wren" in any project
@@ -61,9 +77,11 @@ spotless code                       # pick or create an agent interactively
 ## Development
 
 ```bash
-bun test              # run unit tests
+bun test              # run unit tests (395 passing)
 bun run typecheck     # type-check
 ```
+
+For architecture details, see [`_project/adrs/`](_project/adrs/) and the [PRD](_project/prds/spotless-prd.md).
 
 ## License
 
