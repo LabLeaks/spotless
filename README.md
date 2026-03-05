@@ -15,6 +15,7 @@ spotless code --agent myagent
 - [How it works](#how-it-works)
 - [Quick start](#quick-start)
 - [CLI reference](#cli-reference)
+- [Dashboard](#dashboard)
 - [How it compares](#how-it-compares)
 - [What it doesn't do](#what-it-doesnt-do)
 - [Background](#background)
@@ -154,7 +155,16 @@ That's it. Your agent now has persistent memory.
 
 ## Dashboard
 
-While the proxy is running, open `http://localhost:9000/_dashboard/` to browse agent memories, identity, digest history, and raw conversation events.
+While the proxy is running, open `http://localhost:9000/_dashboard/` for a web UI showing:
+
+- **Memories** — browse, search, and filter the memory graph (with salience scores and associations)
+- **Identity** — the agent's current self-concept and relationship observations
+- **History** — raw conversation archive, searchable
+- **Digests** — log of every consolidation and reflection pass
+- **Selector** — what memories were selected on each turn and why
+- **Health** — consolidation pressure, unconsolidated token count, database stats
+
+Everything is read-only. The dashboard queries the agent's SQLite database directly — no extra infrastructure.
 
 ## Agents
 
