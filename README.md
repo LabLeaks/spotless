@@ -18,7 +18,6 @@ spotless code --agent myagent
 - [Dashboard](#dashboard)
 - [How it compares](#how-it-compares)
 - [What it doesn't do](#what-it-doesnt-do)
-- [Background](#background)
 
 ## The problem
 
@@ -41,6 +40,10 @@ Within a session, things aren't much better. Long conversations hit "Compacting 
 ### Design philosophy: treat it like a coworker
 
 Spotless is designed so that your agent's memory works like a human colleague's would. It remembers what you've discussed, learns from corrections, builds on past context, and occasionally forgets old details that haven't come up in a while — all without you managing a knowledge base or writing to special files. The best mental model is a coworker who was there yesterday and last week: you don't re-explain your preferences, you don't re-introduce the project, you just pick up where you left off. Feedback sticks — if you tell it something was wrong, that correction is encoded and surfaces when relevant, not just during the current session. This also means careless criticism sticks. Your agent's memory is designed to behave predictably by human standards, so treat it accordingly.
+
+### Background
+
+Spotless started as a practical fix for compaction amnesia, but it's also a philosophical experiment. What happens when an AI agent has continuous, persistent memory — not just a scratchpad, but an evolving identity built from accumulated experience? The companion essay on the [Lab Leaks Substack](https://lableaks.substack.com) explores what it might mean for AI agents to develop accountable selves.
 
 ## How it works
 
@@ -186,7 +189,7 @@ Spotless is architecturally different in several ways:
 | | CLAUDE.md / Auto Memory | MCP Memory Servers | Spotless |
 |---|---|---|---|
 | **Mechanism** | Flat files loaded into context | Model calls tools explicitly | Transparent proxy rewrites API requests |
-| **Model awareness** | Model knows about the files | Model knows about the tools | Model doesn't know it's there |
+| **Model awareness** | Model knows about the files | Model knows about the tools | Model is told it has memory, but doesn't manage it |
 | **What's stored** | Markdown notes (human or Claude-written) | Extracted facts or embeddings | Full conversation history + synthesized memory graph |
 | **Retrieval** | Entire file, or nothing | Vector similarity or manual navigation | Relevant memories surface based on current conversation |
 | **Cross-session** | Yes | Yes | Yes |
@@ -204,10 +207,6 @@ The built-in mechanisms are complementary — CLAUDE.md files pass through Spotl
 - **No tool modifications.** Claude Code's tools work exactly as before.
 - **No cloud dependency.** Everything runs locally. Your data stays in `~/.spotless/`.
 - **No degradation on failure.** If anything goes wrong, Spotless falls back to vanilla pass-through. You get normal Claude Code, not a broken session.
-
-## Background
-
-Spotless started as a practical fix for compaction amnesia, but it's also a philosophical experiment. What happens when an AI agent has continuous, persistent memory — not just a scratchpad, but an evolving identity built from accumulated experience? The companion essay on the [Lab Leaks Substack](https://lableaks.substack.com) explores what it might mean for AI agents to develop accountable selves.
 
 ## Development
 
