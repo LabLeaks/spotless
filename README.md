@@ -160,6 +160,28 @@ spotless code --agent wren          # use agent "wren" in any project
 spotless code                       # pick or create an agent interactively
 ```
 
+## How it compares
+
+Claude Code (as of early 2026) has three built-in memory mechanisms: **CLAUDE.md** files you write by hand, **Auto Memory** where Claude writes its own notes to `MEMORY.md`, and **Session Memory** which saves session summaries. All three work the same way — flat Markdown files loaded wholesale into the context window. There's no retrieval, no search, no consolidation. If the file fits, it's injected; if it doesn't, it's truncated at 200 lines.
+
+**MCP memory servers** like [Mem0](https://github.com/coleam00/mcp-mem0) and [basic-memory](https://github.com/basicmachines-co/basic-memory) add semantic search or knowledge graphs, but they require the model to explicitly call tools to save and retrieve memories. The model knows it has a memory system and must choose to use it.
+
+Spotless is architecturally different in several ways:
+
+| | CLAUDE.md / Auto Memory | MCP Memory Servers | Spotless |
+|---|---|---|---|
+| **Mechanism** | Flat files loaded into context | Model calls tools explicitly | Transparent proxy rewrites API requests |
+| **Model awareness** | Model knows about the files | Model knows about the tools | Model doesn't know it's there |
+| **What's stored** | Markdown notes (human or Claude-written) | Extracted facts or embeddings | Full raw conversation + synthesized memory graph |
+| **Retrieval** | Entire file, or nothing | Vector similarity or manual navigation | FTS5 + graph traversal, scored by recency and salience |
+| **Cross-session** | Yes | Yes | Yes |
+| **Cross-project** | Per-repo (auto memory) or global (CLAUDE.md) | Varies | Per-agent — same agent remembers across all directories |
+| **Consolidation** | None — you maintain it | None, or manual | Automatic background digesting when pressure builds |
+| **Identity** | Static persona in a file | Not supported | Evolving self-concept built from accumulated experience |
+| **Failure mode** | Missing context | Tool call errors surface to user | Falls back to vanilla Claude Code |
+
+The built-in mechanisms are complementary — CLAUDE.md files pass through Spotless unchanged. Spotless adds the layers that don't exist yet: selective retrieval, associative memory, background synthesis, and a continuous identity that persists across sessions and projects.
+
 ## What it doesn't do
 
 - **No API keys required.** Spotless forwards Claude Code's auth headers unchanged. It never touches your credentials.
