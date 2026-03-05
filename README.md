@@ -9,6 +9,8 @@ spotless code --agent myagent
 ```
 
 > **v0.1.0 — Early release.** The core works but expect breaking changes. Back up `~/.spotless/` if you have data you care about.
+>
+> **Token usage:** Spotless replaces Claude Code's messages with a longer history trace, which likely increases token consumption. We haven't measured the impact yet and plan to investigate caching behavior soon. Recommended for **Max plan** subscribers who aren't worried about usage limits.
 
 - [The problem](#the-problem)
 - [What Spotless fixes](#what-spotless-fixes)
