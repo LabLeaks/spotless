@@ -24,84 +24,68 @@ Within a session, things aren't much better. Long conversations hit "Compacting 
 
 ## How it works
 
-Spotless is a local reverse proxy. It sits between Claude Code and the Anthropic API, transparently rewriting requests to inject persistent context. Claude doesn't know it's there.
+Spotless is a local reverse proxy. It sits between Claude Code and the Anthropic API, transparently rewriting every request before it goes out. Claude doesn't know it's there.
 
-Here's what happens on every turn:
+### Two data sources, one request
 
-```
-Claude Code sends request
-        │
-        ▼
-   ┌─────────┐
-   │ Spotless │──→ Build history trace from DB (replaces CC's messages)
-   │  Proxy   │──→ Select relevant memories from graph (injected into user message)
-   │         │──→ Inject agent identity + orientation
-   │         │──→ Archive request + response to SQLite
-   └─────────┘
-        │
-        ▼
-  Anthropic API
-```
+Spotless maintains two independent stores that feed into every API request:
 
-### Before and after
+**Tier 1 — History Archive.** Every conversation turn is recorded as raw content blocks in SQLite. This is the source of truth — append-only, never summarized, never modified. When assembling a request, Spotless replaces Claude Code's messages array with a **history trace** reconstructed from this archive: real user/assistant message pairs from past sessions, in chronological order. Oldest turns are dropped first when the budget fills up (~62K tokens in a typical session).
 
-**Without Spotless** — Claude Code sends only the current session's messages:
+**Tier 2 — Memory Graph.** A background digest process reads the raw archive and extracts structured knowledge: atomic facts ("project uses PostgreSQL 15"), episodic memories ("we spent two hours debugging the race condition"), corrections (superseding outdated facts), and self-concept observations. These are stored as nodes in an association graph, linked by co-occurrence — not vector similarity. When a new turn arrives, a lightweight Haiku-based selector picks which memories are relevant. The selector runs asynchronously — zero added latency, results apply on the next turn.
+
+These two sources are assembled into different parts of the API request:
 
 ```
-system:  [Claude Code's system prompt]
-messages:
-  user:      "What's the database schema?"
-  assistant: "Let me look at the codebase..."
-  user:      "Now add a migration for the new column"
+system prompt:
+  ┌─────────────────────────────────────────┐
+  │ <spotless-orientation>                  │ ← tells the agent about its memory
+  │ [Claude Code's system prompt, unchanged]│
+  └─────────────────────────────────────────┘
+
+messages array:
+  ┌─────────────────────────────────────────┐
+  │ HISTORY TRACE (from Tier 1)             │ ← replaces CC's messages
+  │                                         │
+  │ Preamble: "[Spotless Memory System]     │
+  │   Your name is wren..."                 │
+  │                                         │
+  │ Real past conversation pairs:           │
+  │   user: "Tell me about the database"    │
+  │   assistant: "The schema uses..."       │
+  │   user: "--- new session ---            │
+  │     Let's add that caching layer"       │
+  │   assistant: "I'll use Redis for..."    │
+  ├─────────────────────────────────────────┤
+  │ CURRENT USER MESSAGE                    │ ← the actual new message
+  │                                         │
+  │ Prepended with Tier 2 content:          │
+  │   <your identity>                       │ ← from memory graph
+  │     I am wren.                          │
+  │     - I tend to be thorough.            │
+  │   </your identity>                      │
+  │   <relevant knowledge>                  │ ← from memory graph
+  │     Project uses PostgreSQL 15.         │
+  │     I learned to use migrations.        │
+  │   </relevant knowledge>                 │
+  │                                         │
+  │ "Now add a migration for the new column"│ ← what the user typed
+  └─────────────────────────────────────────┘
 ```
 
-**With Spotless** — the request is rewritten with full cross-session history and memories:
+The history trace is photographic — real message pairs, not summaries. The memory tags are synthesized knowledge, injected as text that looks like it was always part of the user's message. The model reads both as natural context; it never sees database IDs, scores, or retrieval metadata.
 
-```
-system:
-  <spotless-orientation>                          ← tells the agent about its memory
-    You have a persistent memory system...
-  </spotless-orientation>
-  [Claude Code's system prompt]                   ← preserved unchanged
+After building the request, Spotless archives the current turn to Tier 1 (for future history traces) and forwards everything to the Anthropic API. Responses are streamed back and archived too.
 
-messages:
-  user:      "[Spotless Memory System] Your name   ← memory preamble
-               is "wren"..."
-  assistant: "Understood. I'm wren..."
+### How memories get created
 
-  user:      "Tell me about the database"         ← from 3 days ago
-  assistant: "The schema uses PostgreSQL with..."
-  user:      "--- new session ---                 ← session boundary (prepended)
-              Let's add that caching layer"       ← from yesterday
-  assistant: "I'll use Redis for the hot path..."
+Raw conversation piles up in Tier 1. When enough unconsolidated history accumulates (tracked by consolidation pressure), a two-phase digest runs:
 
-  user:      <your identity>                      ← agent's self-concept
-               I tend to be thorough. I've learned
-               to ask before over-engineering.
-             </your identity>
-             <relevant knowledge>                 ← contextually selected memories
-               Project uses PostgreSQL 15.
-               I learned to use migrations, not raw DDL.
-               Redis caching added yesterday.
-             </relevant knowledge>
-             "Now add a migration for the         ← actual current message
-              new column"
-```
+1. **Consolidation** — Haiku reads recent conversation and catalogs facts: creating new memories, merging duplicates, superseding outdated ones with corrections. Each memory gets a salience score and associations to related memories.
 
-The history trace is budget-trimmed to fit alongside Claude Code's system prompt and tools (~62K tokens for history in a typical session). Oldest messages are dropped first. Memories are selected by a lightweight Haiku-based selector that runs asynchronously on each human turn — zero added latency (results apply on the next turn).
+2. **Reflection** — Haiku reviews what was just consolidated and updates the agent's self-concept: observations about its own working style, values, and relationship with the user. These self-concept facts live in the same graph as world-facts, linked to identity anchor nodes.
 
-### Three-tier architecture
-
-```
-Tier 1: History Archive     Raw conversation stored as content blocks in SQLite.
-                            Source of truth. Append-only.
-
-Tier 2: Memory Graph        Facts, episodes, associations, identity — extracted
-                            by background digesting. Searchable via FTS5.
-
-Tier 3: Active Context      Assembled per-request from Tier 1 (history prefix)
-                            and Tier 2 (memory suffix). What the agent sees.
-```
+Digesting is triggered automatically when pressure is high and the history trace has to drop old messages. You can also trigger it manually with `spotless digest`.
 
 ## Requirements
 
