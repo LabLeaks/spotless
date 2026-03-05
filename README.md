@@ -22,6 +22,10 @@ Within a session, things aren't much better. Long conversations hit "Compacting 
 
 5. **Your agent develops a self-concept.** Over time, the digest process builds an identity for your agent — values, working style, relationship dynamics — from the pattern of your interactions. This isn't a static persona file; it evolves as the agent accumulates experience.
 
+### Design philosophy: treat it like a coworker
+
+Spotless is designed so that your agent's memory works like a human colleague's would. It remembers what you've discussed, learns from corrections, builds on past context, and occasionally forgets old details that haven't come up in a while — all without you managing a knowledge base or writing to special files. The best mental model is a coworker who was there yesterday and last week: you don't re-explain your preferences, you don't re-introduce the project, you just pick up where you left off. Feedback sticks — if you tell it something was wrong, that correction is encoded and surfaces when relevant, not just during the current session. This also means careless criticism sticks. Your agent's memory is designed to behave predictably by human standards, so treat it accordingly.
+
 ## How it works
 
 Spotless is a local reverse proxy. It sits between Claude Code and the Anthropic API, transparently rewriting every request before it goes out. Claude doesn't know it's there.
