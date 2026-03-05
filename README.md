@@ -66,7 +66,7 @@ system:
 
 messages:
   user:      "[Spotless Memory System] Your name   ← memory preamble
-               is 'wren'..."
+               is "wren"..."
   assistant: "Understood. I'm wren..."
 
   user:      "Tell me about the database"         ← from 3 days ago
@@ -81,14 +81,14 @@ messages:
              </your identity>
              <relevant knowledge>                 ← contextually selected memories
                Project uses PostgreSQL 15.
-               User prefers migrations over DDL.
+               I learned to use migrations, not raw DDL.
                Redis caching added yesterday.
              </relevant knowledge>
              "Now add a migration for the         ← actual current message
               new column"
 ```
 
-The history trace is budget-trimmed to fit alongside Claude Code's system prompt and tools (~62K tokens for history in a typical session). Oldest messages are dropped first. Memories are selected by a lightweight Haiku-based selector that runs asynchronously on each turn — zero added latency (results apply on the next turn).
+The history trace is budget-trimmed to fit alongside Claude Code's system prompt and tools (~62K tokens for history in a typical session). Oldest messages are dropped first. Memories are selected by a lightweight Haiku-based selector that runs asynchronously on each human turn — zero added latency (results apply on the next turn).
 
 ### Three-tier architecture
 
