@@ -4,14 +4,104 @@ Persistent memory for Claude Code.
 
 > **v0.1.0 — Early release.** The core works but expect breaking changes. Back up `~/.spotless/` if you have data you care about.
 
-## What it does
+## The problem
 
-- **Remembers across sessions** — your agent knows what you discussed yesterday, last week, last month
-- **Never hit context limits again** — raw history is stored in SQLite; only relevant context is loaded per turn
-- **Zero config** — just a local proxy. No MCP servers, no plugins, no API keys. `spotless start` and go
-- **Learns what matters** — background process consolidates raw conversation into a memory graph. Facts, corrections, identity — all tracked automatically
+Claude Code forgets everything between sessions. Close the terminal, come back, and it has no idea what you were working on. Your architectural decisions, debugging breakthroughs, personal preferences — gone.
 
-Spotless is a local reverse proxy that sits between Claude Code and Anthropic's API. It archives every conversation to per-agent SQLite, selects and injects relevant memories each turn, and consolidates raw data into a structured memory graph in the background. Claude doesn't know it's there — it just remembers.
+Within a session, things aren't much better. Long conversations hit "Compacting Conversation," which lossy-summarizes your context and often undoes hours of careful work. Post-compaction, Claude re-reads the same files, forgets recent corrections, and regresses on code it just fixed. And because memory is per-project-directory, switching between related repos means starting from scratch each time.
+
+## What Spotless fixes
+
+1. **No more amnesia between sessions.** Every conversation is archived to SQLite. When you start a new session, your agent picks up where you left off — across days, weeks, months. "We discussed this yesterday" actually works.
+
+2. **Compaction stops destroying your work.** Spotless maintains its own history trace from the archive, independent of Claude Code's context management. When CC compacts, Spotless replaces the lossy summary with real conversation history, budget-trimmed from the oldest messages rather than arbitrarily summarized.
+
+3. **Memory follows the agent, not the folder.** A named agent remembers across all projects. `spotless code --agent wren` gives you the same persistent memory whether you're in your frontend repo, backend repo, or infrastructure directory.
+
+4. **Knowledge compounds over time.** A background digest process consolidates raw conversation into a memory graph — extracting facts, building associations, tracking corrections. When you told your agent three weeks ago that you prefer PostgreSQL over MongoDB, that surfaces automatically when databases come up again.
+
+5. **Your agent develops a self-concept.** Over time, the digest process builds an identity for your agent — values, working style, relationship dynamics — from the pattern of your interactions. This isn't a static persona file; it evolves as the agent accumulates experience.
+
+## How it works
+
+Spotless is a local reverse proxy. It sits between Claude Code and the Anthropic API, transparently rewriting requests to inject persistent context. Claude doesn't know it's there.
+
+Here's what happens on every turn:
+
+```
+Claude Code sends request
+        │
+        ▼
+   ┌─────────┐
+   │ Spotless │──→ Build history trace from DB (replaces CC's messages)
+   │  Proxy   │──→ Select relevant memories from graph (injected into user message)
+   │         │──→ Inject agent identity + orientation
+   │         │──→ Archive request + response to SQLite
+   └─────────┘
+        │
+        ▼
+  Anthropic API
+```
+
+### Before and after
+
+**Without Spotless** — Claude Code sends only the current session's messages:
+
+```
+system:  [Claude Code's system prompt]
+messages:
+  user:      "What's the database schema?"
+  assistant: "Let me look at the codebase..."
+  user:      "Now add a migration for the new column"
+```
+
+**With Spotless** — the request is rewritten with full cross-session history and memories:
+
+```
+system:
+  <spotless-orientation>                          ← tells the agent about its memory
+    You have a persistent memory system...
+  </spotless-orientation>
+  [Claude Code's system prompt]                   ← preserved unchanged
+
+messages:
+  user:      "[Spotless Memory System] Your name   ← memory preamble
+               is 'wren'..."
+  assistant: "Understood. I'm wren..."
+
+  user:      "Tell me about the database"         ← from 3 days ago
+  assistant: "The schema uses PostgreSQL with..."
+  user:      "--- new session ---                 ← session boundary (prepended)
+              Let's add that caching layer"       ← from yesterday
+  assistant: "I'll use Redis for the hot path..."
+
+  user:      <your identity>                      ← agent's self-concept
+               I tend to be thorough. I've learned
+               to ask before over-engineering.
+             </your identity>
+             <relevant knowledge>                 ← contextually selected memories
+               Project uses PostgreSQL 15.
+               User prefers migrations over DDL.
+               Redis caching added yesterday.
+             </relevant knowledge>
+             "Now add a migration for the         ← actual current message
+              new column"
+```
+
+The history trace is budget-trimmed to fit alongside Claude Code's system prompt and tools (~62K tokens for history in a typical session). Oldest messages are dropped first. Memories are selected by a lightweight Haiku-based selector that runs asynchronously on each turn — zero added latency (results apply on the next turn).
+
+### Three-tier architecture
+
+```
+Tier 1: History Archive     Raw conversation stored as content blocks in SQLite.
+                            Source of truth. Append-only.
+
+Tier 2: Memory Graph        Facts, episodes, associations, identity — extracted
+                            by background digesting. Searchable via FTS5.
+
+Tier 3: Active Context      Assembled per-request from Tier 1 (history prefix)
+                            and Tier 2 (memory suffix). What the agent sees.
+```
 
 ## Requirements
 
@@ -45,25 +135,21 @@ spotless code --agent myagent
 
 That's it. Your agent now has persistent memory.
 
-## How it works
-
-The proxy intercepts Claude Code's API calls. Every request and response is archived to a per-agent SQLite database. A background digest process consolidates raw conversation into a memory graph — extracting facts, building associations, and tracking identity. On each turn, a lightweight selector picks relevant memories and injects them into the conversation. The agent never sees a tool or prompt about memory — it's a transparent brain implant.
-
 ## CLI reference
 
 | Command | Description |
 |---------|-------------|
-| `spotless start [--port 9000] [--no-digest]` | Start the proxy. Background digesting enabled by default. |
+| `spotless start [--port 9000] [--no-digest]` | Start the proxy. |
 | `spotless stop` | Stop the running proxy. |
 | `spotless status` | Check if the proxy is running. |
 | `spotless code [--agent <name>] [--port 9000] [-- ...claude args]` | Launch Claude Code through the proxy. Auto-starts proxy if needed. |
 | `spotless agents` | List all agents with DB sizes. |
-| `spotless digest [--agent <name>] [--dry-run] [--model haiku\|sonnet]` | Run a digest pass (memory consolidation). |
+| `spotless digest [--agent <name>] [--dry-run] [--model haiku\|sonnet]` | Manually trigger a digest pass (memory consolidation). |
 | `spotless repair [--agent <name>] [--fix] [--purge-history]` | Diagnose and repair database issues. |
 
 ## Dashboard
 
-While the proxy is running, open `http://localhost:9000/_dashboard/` to browse agent memories, identity, digest passes, selector runs, and raw history events.
+While the proxy is running, open `http://localhost:9000/_dashboard/` to browse agent memories, identity, digest history, and raw conversation events.
 
 ## Agents
 
@@ -74,10 +160,22 @@ spotless code --agent wren          # use agent "wren" in any project
 spotless code                       # pick or create an agent interactively
 ```
 
+## What it doesn't do
+
+- **No API keys required.** Spotless forwards Claude Code's auth headers unchanged. It never touches your credentials.
+- **No model changes.** Your chosen model (Opus, Sonnet, etc.) passes through untouched.
+- **No tool modifications.** Claude Code's tools work exactly as before.
+- **No cloud dependency.** Everything runs locally. Your data stays in `~/.spotless/`.
+- **No degradation on failure.** If anything goes wrong, Spotless falls back to vanilla pass-through. You get normal Claude Code, not a broken session.
+
+## Background
+
+Spotless started as a practical fix for compaction amnesia, but it's also a philosophical experiment. What happens when an AI agent has continuous, persistent memory — not just a scratchpad, but an evolving identity built from accumulated experience? The companion essay on the [Lab Leaks Substack](https://lableaks.substack.com) explores what it might mean for AI agents to develop accountable selves.
+
 ## Development
 
 ```bash
-bun test              # run unit tests (395 passing)
+bun test              # 384 unit tests
 bun run typecheck     # type-check
 ```
 
