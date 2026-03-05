@@ -112,6 +112,14 @@ Raw conversation piles up in Tier 1. When enough unconsolidated history accumula
 
 Digesting is triggered automatically when pressure is high and the history trace has to drop old messages. You can also trigger it manually with `spotless digest`.
 
+### Consolidation pressure
+
+As you talk faster than the digest process can keep up, **consolidation pressure** builds. When it gets high enough, your agent will ask you to slow down — this is a real message in the conversation, not a system notification. It means unconsolidated conversation is piling up and the oldest turns are being dropped from the history trace before they've been distilled into memories.
+
+Nothing is erased — the raw archive is append-only and everything is still in Tier 1. But turns that haven't been consolidated yet won't surface as memories in Tier 2. Slowing down gives the digest process time to catch up, ensuring important details get encoded into the memory graph before they age out of the history window.
+
+The dashboard's Health tab shows current pressure levels. A future release will add a menubar indicator so you can see pressure at a glance without opening the dashboard.
+
 ## Requirements
 
 - [Bun](https://bun.sh) >= 1.0 (runtime — Spotless uses Bun's built-in SQLite and HTTP server)
