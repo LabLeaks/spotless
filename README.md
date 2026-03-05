@@ -198,7 +198,7 @@ Spotless is architecturally different in several ways:
 | **Identity** | Static persona in a file | Not supported | Evolving self-concept built from accumulated experience |
 | **Failure mode** | Missing context | Tool call errors surface to user | Falls back to vanilla Claude Code |
 
-The built-in mechanisms are complementary — CLAUDE.md files pass through Spotless unchanged. Spotless adds the layer that doesn't exist yet: a continuous, evolving memory that works the way you'd expect a colleague's to.
+The built-in mechanisms are complementary — CLAUDE.md and project instructions live in the system prompt, which Spotless preserves (it only rewrites the conversation messages). Spotless adds the layer that doesn't exist yet: a continuous, evolving memory that works the way you'd expect a colleague's to.
 
 ## What it doesn't do
 
