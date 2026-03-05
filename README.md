@@ -8,13 +8,13 @@ Persistent memory for Claude Code.
 
 Claude Code forgets everything between sessions. Close the terminal, come back, and it has no idea what you were working on. Your architectural decisions, debugging breakthroughs, personal preferences — gone.
 
-Within a session, things aren't much better. Long conversations hit "Compacting Conversation," which lossy-summarizes your context and often undoes hours of careful work. Post-compaction, Claude re-reads the same files, forgets recent corrections, and regresses on code it just fixed. And because memory is per-project-directory, switching between related repos means starting from scratch each time.
+Within a session, things aren't much better. Long conversations hit "Compacting Conversation," which lossy-summarizes your context and often undoes hours of careful work. Post-compaction, Claude re-reads the same files, forgets recent corrections, and regresses on code it just fixed. Every session, you start from scratch with a stranger who has your codebase open.
 
 ## What Spotless fixes
 
 1. **No more amnesia between sessions.** Every conversation is archived to SQLite. When you start a new session, your agent picks up where you left off — across days, weeks, months. "We discussed this yesterday" actually works.
 
-2. **Compaction stops destroying your work.** Spotless maintains its own history trace from the archive, independent of Claude Code's context management. When CC compacts, Spotless replaces the lossy summary with real conversation history, budget-trimmed from the oldest messages rather than arbitrarily summarized.
+2. **Compaction stops destroying your work.** When Claude Code compacts, it replaces your conversation with a lossy summary — and your agent loses corrections, decisions, and context it just had. Spotless replaces that summary with actual conversation history from its archive. Your agent remembers what was really said, not a garbled approximation.
 
 3. **Your agent knows you, not just the project.** Memory is keyed to a named agent, not a directory. Your agent learns your preferences, communication style, and decision-making patterns across every project you work on together. This is a different bet than project-scoped memory — a project-specific system will know the codebase better, but your agent won't know *you*.
 
@@ -34,9 +34,9 @@ Spotless is a local reverse proxy. It sits between Claude Code and the Anthropic
 
 Spotless maintains two independent stores that feed into every API request:
 
-**Tier 1 — History Archive.** Every conversation turn is recorded as raw content blocks in SQLite. This is the source of truth — append-only, never summarized, never modified. When assembling a request, Spotless replaces Claude Code's messages array with a **history trace** reconstructed from this archive: real user/assistant message pairs from past sessions, in chronological order. Oldest turns are dropped first when the budget fills up (~62K tokens in a typical session).
+**Tier 1 — History Archive.** Every conversation turn is recorded verbatim to SQLite — append-only, never summarized, never modified. When assembling a request, Spotless replaces Claude Code's messages with a **history trace** reconstructed from this archive: real user/assistant exchanges from past sessions, in chronological order. Oldest turns drop off the back when the budget fills up (~62K tokens in a typical session), the way a coworker naturally loses detail about what happened months ago.
 
-**Tier 2 — Memory Graph.** A background digest process reads the raw archive and extracts structured knowledge: atomic facts ("project uses PostgreSQL 15"), episodic memories ("we spent two hours debugging the race condition"), corrections (superseding outdated facts), and self-concept observations. These are stored as nodes in an association graph, linked by co-occurrence — not vector similarity. When a new turn arrives, a lightweight Haiku-based selector picks which memories are relevant. The selector runs asynchronously — zero added latency, results apply on the next turn.
+**Tier 2 — Memory Graph.** A background digest process reads the raw archive and extracts structured knowledge: facts ("project uses PostgreSQL 15"), experiences ("we spent two hours debugging the race condition"), corrections (superseding outdated facts), and self-concept observations. These are stored as nodes in a graph, connected by what was discussed together — the way you'd associate "that database migration" with "the day everything broke." When a new turn arrives, a lightweight selector picks which memories are relevant to the current conversation. This runs asynchronously — zero added latency.
 
 These two sources are assembled into different parts of the API request:
 
@@ -77,7 +77,7 @@ messages array:
   └─────────────────────────────────────────┘
 ```
 
-The history trace is photographic — real message pairs, not summaries. The memory tags are synthesized knowledge, injected as text that looks like it was always part of the user's message. The model reads both as natural context; it never sees database IDs, scores, or retrieval metadata.
+The history trace is real conversation — actual message pairs, not summaries. The memory tags are synthesized knowledge, injected as text that looks like it was always part of the user's message. The model reads both as natural context; it never sees database IDs, scores, or retrieval metadata.
 
 After building the request, Spotless archives the current turn to Tier 1 (for future history traces) and forwards everything to the Anthropic API. Responses are streamed back and archived too.
 
@@ -85,9 +85,9 @@ After building the request, Spotless archives the current turn to Tier 1 (for fu
 
 Raw conversation piles up in Tier 1. When enough unconsolidated history accumulates (tracked by consolidation pressure), a two-phase digest runs:
 
-1. **Consolidation** — Haiku reads recent conversation and catalogs facts: creating new memories, merging duplicates, superseding outdated ones with corrections. Each memory gets a salience score and associations to related memories.
+1. **Consolidation** — a small model reads recent conversation and catalogs what happened: new facts, merged duplicates, corrections that supersede outdated knowledge. Memories are linked to related memories, so recalling one can bring back others from the same context.
 
-2. **Reflection** — Haiku reviews what was just consolidated and updates the agent's self-concept: observations about its own working style, values, and relationship with the user. These self-concept facts live in the same graph as world-facts, linked to identity anchor nodes.
+2. **Reflection** — the same model reviews what was just consolidated and updates the agent's self-concept: how it works, what it values, how the relationship with you is going. These observations live in the same graph as project facts — the agent's sense of self is built from the same material as its knowledge.
 
 Digesting is triggered automatically when pressure is high and the history trace has to drop old messages. You can also trigger it manually with `spotless digest`.
 
@@ -160,15 +160,15 @@ Spotless is architecturally different in several ways:
 |---|---|---|---|
 | **Mechanism** | Flat files loaded into context | Model calls tools explicitly | Transparent proxy rewrites API requests |
 | **Model awareness** | Model knows about the files | Model knows about the tools | Model doesn't know it's there |
-| **What's stored** | Markdown notes (human or Claude-written) | Extracted facts or embeddings | Full raw conversation + synthesized memory graph |
-| **Retrieval** | Entire file, or nothing | Vector similarity or manual navigation | FTS5 + graph traversal, scored by recency and salience |
+| **What's stored** | Markdown notes (human or Claude-written) | Extracted facts or embeddings | Full conversation history + synthesized memory graph |
+| **Retrieval** | Entire file, or nothing | Vector similarity or manual navigation | Relevant memories surface based on current conversation |
 | **Cross-session** | Yes | Yes | Yes |
 | **Scoping** | Per-repo (auto memory) or global (CLAUDE.md) | Varies | Per-agent — knows *you* across projects, not the project itself |
 | **Consolidation** | None — you maintain it | None, or manual | Automatic background digesting when pressure builds |
 | **Identity** | Static persona in a file | Not supported | Evolving self-concept built from accumulated experience |
 | **Failure mode** | Missing context | Tool call errors surface to user | Falls back to vanilla Claude Code |
 
-The built-in mechanisms are complementary — CLAUDE.md files pass through Spotless unchanged. Spotless adds the layers that don't exist yet: selective retrieval, associative memory, background synthesis, and a continuous identity that persists across sessions and projects.
+The built-in mechanisms are complementary — CLAUDE.md files pass through Spotless unchanged. Spotless adds the layer that doesn't exist yet: a continuous, evolving memory that works the way you'd expect a colleague's to.
 
 ## What it doesn't do
 
