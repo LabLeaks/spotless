@@ -6,9 +6,9 @@ Persistent memory for Claude Code.
 
 ## The problem
 
-Claude Code forgets everything between sessions. Close the terminal, come back, and it has no idea what you were working on. Your architectural decisions, debugging breakthroughs, personal preferences — gone.
+Claude Code forgets everything between sessions. Close the terminal, come back, and it has no idea what you were working on — or who you are. Your decisions, breakthroughs, preferences, the way you like to work — gone.
 
-Within a session, things aren't much better. Long conversations hit "Compacting Conversation," which lossy-summarizes your context and often undoes hours of careful work. Post-compaction, Claude re-reads the same files, forgets recent corrections, and regresses on code it just fixed. Every session, you start from scratch with a stranger who has your codebase open.
+Within a session, things aren't much better. Long conversations hit "Compacting Conversation," which lossy-summarizes your context and often undoes hours of careful work. Post-compaction, Claude forgets recent corrections and regresses on things it just got right. Every session, you start from scratch with a stranger.
 
 ## What Spotless fixes
 
