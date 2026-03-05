@@ -16,7 +16,7 @@ Within a session, things aren't much better. Long conversations hit "Compacting 
 
 2. **Compaction stops destroying your work.** Spotless maintains its own history trace from the archive, independent of Claude Code's context management. When CC compacts, Spotless replaces the lossy summary with real conversation history, budget-trimmed from the oldest messages rather than arbitrarily summarized.
 
-3. **Memory follows the agent, not the folder.** A named agent remembers across all projects. `spotless code --agent wren` gives you the same persistent memory whether you're in your frontend repo, backend repo, or infrastructure directory.
+3. **Your agent knows you, not just the project.** Memory is keyed to a named agent, not a directory. Your agent learns your preferences, communication style, and decision-making patterns across every project you work on together. This is a different bet than project-scoped memory — a project-specific system will know the codebase better, but your agent won't know *you*.
 
 4. **Knowledge compounds over time.** A background digest process consolidates raw conversation into a memory graph — extracting facts, building associations, tracking corrections. When you told your agent three weeks ago that you prefer PostgreSQL over MongoDB, that surfaces automatically when databases come up again.
 
@@ -159,7 +159,7 @@ Spotless is architecturally different in several ways:
 | **What's stored** | Markdown notes (human or Claude-written) | Extracted facts or embeddings | Full raw conversation + synthesized memory graph |
 | **Retrieval** | Entire file, or nothing | Vector similarity or manual navigation | FTS5 + graph traversal, scored by recency and salience |
 | **Cross-session** | Yes | Yes | Yes |
-| **Cross-project** | Per-repo (auto memory) or global (CLAUDE.md) | Varies | Per-agent — same agent remembers across all directories |
+| **Scoping** | Per-repo (auto memory) or global (CLAUDE.md) | Varies | Per-agent — knows *you* across projects, not the project itself |
 | **Consolidation** | None — you maintain it | None, or manual | Automatic background digesting when pressure builds |
 | **Identity** | Static persona in a file | Not supported | Evolving self-concept built from accumulated experience |
 | **Failure mode** | Missing context | Tool call errors surface to user | Falls back to vanilla Claude Code |
