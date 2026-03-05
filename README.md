@@ -2,7 +2,14 @@
 
 Persistent memory for Claude Code.
 
+```bash
+npm install -g @lableaks/spotless    # requires Bun runtime
+spotless code --agent myagent
+```
+
 > **v0.1.0 — Early release.** The core works but expect breaking changes. Back up `~/.spotless/` if you have data you care about.
+
+**Contents:** [The problem](#the-problem) | [What Spotless fixes](#what-spotless-fixes) | [How it works](#how-it-works) | [Quick start](#quick-start) | [CLI reference](#cli-reference) | [How it compares](#how-it-compares) | [What it doesn't do](#what-it-doesnt-do) | [Background](#background)
 
 ## The problem
 
@@ -93,15 +100,17 @@ Digesting is triggered automatically when pressure is high and the history trace
 
 ## Requirements
 
-- [Bun](https://bun.sh) >= 1.0
+- [Bun](https://bun.sh) >= 1.0 (runtime — Spotless uses Bun's built-in SQLite and HTTP server)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with a Claude Max subscription
 - macOS or Linux
 
 ## Quick start
 
-### Install from npm
+### Install
 
 ```bash
+npm install -g @lableaks/spotless
+# or
 bun add -g @lableaks/spotless
 ```
 
