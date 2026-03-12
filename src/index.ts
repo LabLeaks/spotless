@@ -321,6 +321,45 @@ async function pickAgent(): Promise<string> {
   process.exit(1);
 }
 
+/**
+ * Session lock: prevents two sessions from using the same agent simultaneously.
+ * Agents are single-session by design — concurrent access corrupts proxy state.
+ */
+function getSessionLockPath(agentName: string): string {
+  return join(getAgentDbPath(agentName), "..", "session.lock");
+}
+
+function acquireSessionLock(agentName: string): void {
+  const lockPath = getSessionLockPath(agentName);
+
+  // Check for existing lock
+  try {
+    if (existsSync(lockPath)) {
+      const lockData = JSON.parse(readFileSync(lockPath, "utf-8"));
+      if (lockData.pid && isProcessRunning(lockData.pid)) {
+        console.error(`[spotless] Agent "${agentName}" is already in use (pid ${lockData.pid})`);
+        console.error(`[spotless] Agents are single-session — use a different agent or stop the other session first.`);
+        process.exit(1);
+      }
+      // Stale lock — process is gone, clean up
+    }
+  } catch {
+    // Corrupt lock file — overwrite it
+  }
+
+  // Write lock
+  mkdirSync(join(lockPath, ".."), { recursive: true });
+  writeFileSync(lockPath, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+}
+
+function releaseSessionLock(agentName: string): void {
+  try {
+    unlinkSync(getSessionLockPath(agentName));
+  } catch {
+    // Already gone
+  }
+}
+
 async function cmdCode(port: number, agentArg: string | null, claudeArgs: string[]): Promise<void> {
   // Resolve agent name — interactive if not provided
   let agentName: string;
@@ -334,6 +373,15 @@ async function cmdCode(port: number, agentArg: string | null, claudeArgs: string
     console.error(`[spotless] Invalid agent name: "${agentName}" (lowercase alphanumeric + hyphens, 1-32 chars)`);
     process.exit(1);
   }
+
+  // Prevent concurrent sessions on the same agent
+  acquireSessionLock(agentName);
+
+  // Clean up lock on exit
+  const releaseLock = () => releaseSessionLock(agentName);
+  process.on("exit", releaseLock);
+  process.on("SIGINT", () => { releaseLock(); process.exit(130); });
+  process.on("SIGTERM", () => { releaseLock(); process.exit(143); });
 
   // Ensure proxy is running
   let proxyPort = port;
@@ -370,6 +418,7 @@ async function cmdCode(port: number, agentArg: string | null, claudeArgs: string
   });
 
   const exitCode = await proc.exited;
+  releaseLock();
   process.exit(exitCode);
 }
 
