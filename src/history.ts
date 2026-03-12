@@ -9,6 +9,7 @@ import type { Database } from "bun:sqlite";
 import type { Message, ContentBlock } from "./types.ts";
 import { estimateMessageTokens, HISTORY_BUDGET } from "./tokens.ts";
 import { getConsolidationPressure } from "./consolidation.ts";
+import { logWarn } from "./logger.ts";
 
 export interface HistoryResult {
   messages: Message[];
@@ -234,11 +235,16 @@ function rowToContentBlock(row: RawEventRow): ContentBlock | null {
 
     case "tool_use": {
       const meta = row.metadata ? JSON.parse(row.metadata) : {};
+      const parsed = tryParseJson(row.content);
+      const input = typeof parsed === "object" && parsed !== null ? parsed : {};
+      if (parsed !== input) {
+        logWarn(`[spotless] tool_use input not a dict in history: id=${row.id} tool=${meta.tool_name} raw=${JSON.stringify(row.content).slice(0, 200)}`);
+      }
       return {
         type: "tool_use",
         id: meta.tool_id ?? "",
         name: meta.tool_name ?? "",
-        input: tryParseJson(row.content),
+        input,
       };
     }
 
