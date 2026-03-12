@@ -9,6 +9,7 @@
  *   spotless code [--agent <name>] [--port 9000] [-- ...claude args]
  *   spotless agents
  *   spotless digest [--agent <name>] [--dry-run] [--model haiku|sonnet]
+ *   spotless logs [--agent <name>]
  *   spotless repair [--agent <name>] [--purge-history] [--fix]
  */
 
@@ -17,10 +18,12 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { startProxy } from "./proxy.ts";
-import { generateAgentName, validateAgentName, listAgents } from "./agent.ts";
+import { generateAgentName, validateAgentName, listAgents, getAgentDbPath } from "./agent.ts";
 import { createDigestLoop } from "./digest-loop.ts";
 import { runDigestPass } from "./digester.ts";
 import { diagnose, purgeHistory, repairHistory } from "./repair.ts";
+import { LOG_FILE } from "./logger.ts";
+import { Database } from "bun:sqlite";
 
 const SPOTLESS_DIR = join(homedir(), ".spotless");
 const PID_FILE = join(SPOTLESS_DIR, "spotless.pid");
@@ -54,6 +57,10 @@ function cmdHelp(): void {
     spotless digest [--agent <name>] [--dry-run] [--model haiku|sonnet]
         Run a digest pass (memory consolidation). Digests all agents if
         --agent is omitted.
+
+    spotless logs [--agent <name>]
+        Collect proxy logs and agent diagnostics into a single file
+        for bug reports. Saves to ~/.spotless/spotless-report-<date>.txt
 
     spotless repair [--agent <name>] [--purge-history] [--fix]
         Diagnose and repair agent database corruption.
@@ -507,6 +514,87 @@ function runDiagnostics(agentName: string, purgeHistoryFlag: boolean, fixFlag: b
   }
 }
 
+function cmdLogs(agentArg: string | null): void {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const outPath = join(SPOTLESS_DIR, `spotless-report-${timestamp}.txt`);
+  const lines: string[] = [];
+
+  lines.push(`Spotless Bug Report — ${new Date().toISOString()}`);
+  lines.push(`${"=".repeat(60)}\n`);
+
+  // Include proxy log file
+  lines.push("## Proxy Log (last 200 lines)\n");
+  try {
+    if (existsSync(LOG_FILE)) {
+      const logContent = readFileSync(LOG_FILE, "utf-8");
+      const logLines = logContent.split("\n");
+      const tail = logLines.slice(-200);
+      lines.push(tail.join("\n"));
+    } else {
+      lines.push("(no log file found)");
+    }
+  } catch (e: unknown) {
+    lines.push(`(error reading log: ${e})`);
+  }
+  lines.push("");
+
+  // Include agent diagnostics
+  const targetAgents = agentArg
+    ? [{ name: agentArg }]
+    : listAgents();
+
+  if (targetAgents.length === 0) {
+    lines.push("## Agents\n\n(none found)");
+  } else {
+    for (const agent of targetAgents) {
+      lines.push(`\n## Agent: ${agent.name}\n`);
+      try {
+        const report = diagnose(agent.name);
+        lines.push(`Tier 1: events=${report.tier1.totalEvents} groups=${report.tier1.totalGroups} boundaries=${report.tier1.sessionBoundaries}`);
+        lines.push(`Tier 2: memories=${report.tier2.memories} associations=${report.tier2.associations} identity_nodes=${report.tier2.identityNodes}`);
+        lines.push(`Digest passes: ${report.tier2.digestPasses}  Selector runs: ${report.tier2.selectorRuns}`);
+        if (report.issues.length > 0) {
+          lines.push(`Issues: ${report.issues.join("; ")}`);
+        } else {
+          lines.push("Status: healthy");
+        }
+
+        // Check for malformed tool_use content
+        try {
+          const dbPath = getAgentDbPath(agent.name);
+          const db = new Database(dbPath, { readonly: true });
+          const toolUseRows = db.query(
+            "SELECT id, content, metadata FROM raw_events WHERE content_type = 'tool_use'"
+          ).all() as { id: number; content: string; metadata: string | null }[];
+          let badCount = 0;
+          for (const row of toolUseRows) {
+            try {
+              const parsed = JSON.parse(row.content);
+              if (typeof parsed !== "object" || parsed === null) {
+                lines.push(`  BAD tool_use id=${row.id}: parsed as ${typeof parsed}`);
+                badCount++;
+              }
+            } catch {
+              lines.push(`  BAD tool_use id=${row.id}: JSON parse failed, content=${JSON.stringify(row.content).slice(0, 100)}`);
+              badCount++;
+            }
+          }
+          lines.push(`Tool_use rows: ${toolUseRows.length} total, ${badCount} malformed`);
+          db.close();
+        } catch (e: unknown) {
+          lines.push(`  (error checking tool_use rows: ${e})`);
+        }
+      } catch (e: unknown) {
+        lines.push(`  (error diagnosing: ${e})`);
+      }
+    }
+  }
+
+  ensureDir();
+  writeFileSync(outPath, lines.join("\n"));
+  console.log(`[spotless] Report saved to ${outPath}`);
+}
+
 // --- Main ---
 
 const { command, port, agent, claudeArgs, noDigest, dryRun, model, purgeHistory: purgeHistoryFlag, fix: fixFlag } = parseArgs(process.argv.slice(2));
@@ -529,6 +617,9 @@ switch (command) {
     break;
   case "digest":
     await cmdDigest(agent, dryRun, model);
+    break;
+  case "logs":
+    cmdLogs(agent);
     break;
   case "repair":
     cmdRepair(agent, purgeHistoryFlag, fixFlag);

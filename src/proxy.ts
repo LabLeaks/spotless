@@ -34,6 +34,7 @@ import { estimateSystemTokens, estimateToolsTokens, computeHistoryBudget, estima
 import type { ApiRequest, ContentBlock, Message, ProxyState, SystemBlock, ContentBlockText } from "./types.ts";
 import { createProxyState } from "./state.ts";
 import { handleDashboardRequest } from "./dashboard.ts";
+import { logError, logWarn, logDiagnostic } from "./logger.ts";
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com";
 
@@ -486,6 +487,26 @@ async function forwardStreaming(
   });
 
   if (!resp.ok || !resp.body) {
+    // Diagnostic: log details on 400 errors to help debug
+    if (resp.status === 400) {
+      try {
+        const errorBody = await resp.clone().text();
+        logError(`[spotless] API 400: ${errorBody.slice(0, 500)}`);
+        // Dump all tool_use blocks for tool_use.input errors
+        if (errorBody.includes("tool_use")) {
+          for (let i = 0; i < body.messages.length; i++) {
+            const msg = body.messages[i]!;
+            if (typeof msg.content === "string") continue;
+            for (let j = 0; j < msg.content.length; j++) {
+              const block = msg.content[j] as unknown as Record<string, unknown>;
+              if (block.type === "tool_use") {
+                logDiagnostic(`messages[${i}].content[${j}]: tool=${block.name} input_type=${typeof block.input} input=${JSON.stringify(block.input).slice(0, 500)}`);
+              }
+            }
+          }
+        }
+      } catch { /* diagnostic logging is non-fatal */ }
+    }
     return new Response(resp.body, {
       status: resp.status,
       statusText: resp.statusText,
@@ -556,11 +577,16 @@ async function forwardStreaming(
           if (b.type === "text") {
             contentBlocks.push({ type: "text", text: b.content });
           } else if (b.type === "tool_use") {
+            const parsed = tryParseJson(b.content);
+            const input = typeof parsed === "object" && parsed !== null ? parsed : {};
+            if (parsed !== input) {
+              logWarn(`[spotless] tool_use input not a dict in tool loop chain: tool=${b.metadata?.tool_name} raw=${JSON.stringify(b.content).slice(0, 200)}`);
+            }
             contentBlocks.push({
               type: "tool_use",
               id: (b.metadata?.tool_id as string) ?? "",
               name: (b.metadata?.tool_name as string) ?? "",
-              input: tryParseJson(b.content),
+              input,
             });
           } else if (b.type === "thinking" && b.signature) {
             contentBlocks.push({
