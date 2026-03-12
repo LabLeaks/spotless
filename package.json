@@ -8,10 +8,10 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/lableaks/spotless.git"
+    "url": "https://github.com/LabLeaks/spotless.git"
   },
   "author": "lableaks",
-  "homepage": "https://github.com/lableaks/spotless",
+  "homepage": "https://github.com/LabLeaks/spotless",
   "keywords": ["claude", "claude-code", "memory", "proxy", "persistent", "sqlite"],
   "bin": {
     "spotless": "src/index.ts"
