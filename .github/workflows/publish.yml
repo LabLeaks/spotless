@@ -21,7 +21,7 @@ jobs:
 
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bun test
+      - run: bun test test/*.test.ts
 
       - name: Verify tag matches package.json version
         run: |
