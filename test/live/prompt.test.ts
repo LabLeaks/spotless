@@ -7,17 +7,22 @@
  * Requires: Claude Code installed, authenticated, and tmux available.
  */
 
-import { test, expect, describe, afterAll } from "bun:test";
+import { test, expect, describe, afterAll, beforeAll } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { runPrompt, ensureProxy, stopProxy, cleanupAll } from "./harness.ts";
 
 const PORT = 9998;
 const AGENT = `e2e-prompt-${Date.now()}`;
 
+// Skip all live tests if claude CLI is not available (e.g. CI)
+const hasClaude = spawnSync("which", ["claude"], { encoding: "utf-8" }).status === 0;
+const describeLive = hasClaude ? describe : describe.skip;
+
 afterAll(() => {
-  cleanupAll();
+  if (hasClaude) cleanupAll();
 });
 
-describe("prompt mode", () => {
+describeLive("prompt mode", () => {
   test("basic round-trip: sends prompt, gets response, archives to DB", async () => {
     const result = await runPrompt(
       "Reply with exactly the word 'PINEAPPLE' and nothing else.",

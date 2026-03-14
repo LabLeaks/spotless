@@ -8,16 +8,22 @@
  */
 
 import { test, expect, describe, afterAll } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { createLiveSession, cleanupAll, detectState } from "./harness.ts";
 import type { LiveSession } from "./harness.ts";
 
 const PORT = 9998;
 
+// Skip live tests if claude CLI or tmux is not available (e.g. CI)
+const hasClaude = spawnSync("which", ["claude"], { encoding: "utf-8" }).status === 0;
+const hasTmux = spawnSync("which", ["tmux"], { encoding: "utf-8" }).status === 0;
+const describeLive = (hasClaude && hasTmux) ? describe : describe.skip;
+
 afterAll(() => {
-  cleanupAll();
+  if (hasClaude) cleanupAll();
 });
 
-describe("interactive mode", () => {
+describeLive("interactive mode", () => {
   test("start session, send message, get response", async () => {
     const session = await createLiveSession({
       agent: `e2e-interactive-${Date.now()}`,
