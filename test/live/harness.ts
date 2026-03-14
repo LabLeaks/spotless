@@ -395,8 +395,8 @@ export async function createLiveSession(
       const leaveIdleDeadline = Math.min(Date.now() + 5_000, deadline);
       while (Date.now() < leaveIdleDeadline) {
         const s = session.state();
-        if (s !== "idle") break;
         if (s === "exited") throw new Error("Claude exited unexpectedly");
+        if (s !== "idle") break;
         await sleep(200);
       }
       // Phase 2: wait for idle to return (response complete)
