@@ -61,11 +61,32 @@ export function estimateArrayTokens(messages: Message[]): number {
 /** Default budget for the history prefix (tokens). Used by consolidation pressure as baseline. */
 export const HISTORY_BUDGET = 144_000;
 
-/** Target total input tokens — upper end of CC's 80-120K sweet spot. */
-export const CONTEXT_BUDGET = 120_000;
+/** Max denominator for consolidation pressure calculation.
+ * Pressure measures how urgently the digester needs to run, independent of context window size.
+ * Without this cap, a 500K+ context budget would let huge volumes of unconsolidated content
+ * accumulate before the digester kicks in — and Haiku (200K context) can't process it all at once.
+ */
+export const PRESSURE_BUDGET_CAP = 144_000;
 
-/** Combined Tier 2 budget for identity + world-fact memories (tokens). */
-export const TIER2_BUDGET = 12_000;
+/** Default target total input tokens. With 1M context models, this can go much higher. */
+export const DEFAULT_CONTEXT_BUDGET = 500_000;
+
+/** Tier 2 budget as a fraction of context budget. */
+const TIER2_RATIO = 0.1;
+
+/** Minimum Tier 2 budget (tokens). */
+const TIER2_FLOOR = 12_000;
+
+/** Maximum Tier 2 budget (tokens). */
+const TIER2_CAP = 60_000;
+
+/** Compute Tier 2 budget from context budget — 10% of context, floored at 12K, capped at 60K. */
+export function computeTier2Budget(contextBudget: number): number {
+  return Math.min(TIER2_CAP, Math.max(TIER2_FLOOR, Math.round(contextBudget * TIER2_RATIO)));
+}
+
+/** Legacy constant for backwards compatibility in tests/consolidation defaults. */
+export const TIER2_BUDGET = TIER2_FLOOR;
 
 /** Minimum tokens identity always gets, even when world-facts are large. */
 export const IDENTITY_FLOOR = 2_000;
@@ -103,10 +124,11 @@ export function estimateToolsTokens(tools: unknown[] | undefined): number {
 /**
  * Compute dynamic history budget after accounting for system, tools, and Tier 2 pool.
  *
- * Formula: CONTEXT_BUDGET - systemTokens - toolsTokens - TIER2_BUDGET - SUFFIX_OVERHEAD
+ * Formula: contextBudget - systemTokens - toolsTokens - tier2Budget - SUFFIX_OVERHEAD
  * Floored at HISTORY_BUDGET_FLOOR so the agent always gets some history.
  */
-export function computeHistoryBudget(systemTokens: number, toolsTokens: number): number {
-  const available = CONTEXT_BUDGET - systemTokens - toolsTokens - TIER2_BUDGET - SUFFIX_OVERHEAD;
+export function computeHistoryBudget(systemTokens: number, toolsTokens: number, contextBudget: number = DEFAULT_CONTEXT_BUDGET): number {
+  const tier2Budget = computeTier2Budget(contextBudget);
+  const available = contextBudget - systemTokens - toolsTokens - tier2Budget - SUFFIX_OVERHEAD;
   return Math.max(available, HISTORY_BUDGET_FLOOR);
 }

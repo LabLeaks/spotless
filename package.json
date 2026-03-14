@@ -1,6 +1,6 @@
 {
   "name": "@lableaks/spotless",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Persistent memory for Claude Code — local proxy, zero config, SQLite-backed",
   "module": "src/index.ts",
   "type": "module",
@@ -27,7 +27,8 @@
   "scripts": {
     "start": "bun run src/index.ts start",
     "dev": "bun --watch run src/index.ts start",
-    "test": "bun test",
+    "test": "bun test test/*.test.ts",
+    "test:live": "bun test test/live/",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "bun test && bun run typecheck"
   },

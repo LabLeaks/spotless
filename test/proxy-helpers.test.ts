@@ -9,8 +9,9 @@ import {
   estimateToolsTokens,
   computeHistoryBudget,
   estimateTokens,
-  CONTEXT_BUDGET,
+  DEFAULT_CONTEXT_BUDGET,
   TIER2_BUDGET,
+  computeTier2Budget,
   IDENTITY_FLOOR,
   MEMORY_FLOOR,
   SUFFIX_OVERHEAD,
@@ -284,36 +285,69 @@ describe("estimateToolsTokens", () => {
 });
 
 describe("computeHistoryBudget", () => {
+  const CTX = 120_000; // explicit context budget for deterministic tests
+
   test("small system/tools → history gets most of the budget", () => {
     // system=1000, tools=2000 → available = 120000 - 1000 - 2000 - 12000 - 1000 = 104000
-    const budget = computeHistoryBudget(1000, 2000);
-    expect(budget).toBe(CONTEXT_BUDGET - 1000 - 2000 - TIER2_BUDGET - SUFFIX_OVERHEAD);
+    const budget = computeHistoryBudget(1000, 2000, CTX);
+    expect(budget).toBe(CTX - 1000 - 2000 - computeTier2Budget(CTX) - SUFFIX_OVERHEAD);
     expect(budget).toBe(104000);
   });
 
   test("large system/tools → history is reduced", () => {
     // system=20000, tools=40000 → available = 120000 - 20000 - 40000 - 12000 - 1000 = 47000
-    const budget = computeHistoryBudget(20000, 40000);
+    const budget = computeHistoryBudget(20000, 40000, CTX);
     expect(budget).toBe(47000);
   });
 
   test("very large system/tools → history hits floor (20K minimum)", () => {
     // system=40000, tools=50000 → available = 120000 - 40000 - 50000 - 12000 - 1000 = 17000 → floor 20000
-    const budget = computeHistoryBudget(40000, 50000);
+    const budget = computeHistoryBudget(40000, 50000, CTX);
     expect(budget).toBe(20000);
   });
 
   test("zero system/tools → maximum history budget", () => {
-    const budget = computeHistoryBudget(0, 0);
-    expect(budget).toBe(CONTEXT_BUDGET - TIER2_BUDGET - SUFFIX_OVERHEAD);
+    const budget = computeHistoryBudget(0, 0, CTX);
+    expect(budget).toBe(CTX - computeTier2Budget(CTX) - SUFFIX_OVERHEAD);
     expect(budget).toBe(107000);
+  });
+
+  test("default context budget is 500K", () => {
+    expect(DEFAULT_CONTEXT_BUDGET).toBe(500_000);
+  });
+
+  test("large context budget scales tier2 proportionally", () => {
+    // 500K context → tier2 = 10% = 50K
+    const budget = computeHistoryBudget(15000, 30000, 500_000);
+    const tier2 = computeTier2Budget(500_000);
+    expect(tier2).toBe(50_000);
+    expect(budget).toBe(500_000 - 15000 - 30000 - 50_000 - SUFFIX_OVERHEAD);
+  });
+});
+
+describe("computeTier2Budget", () => {
+  test("10% of context budget", () => {
+    expect(computeTier2Budget(500_000)).toBe(50_000);
+  });
+
+  test("floored at 12K", () => {
+    expect(computeTier2Budget(50_000)).toBe(12_000);
+  });
+
+  test("capped at 60K", () => {
+    expect(computeTier2Budget(1_000_000)).toBe(60_000);
+  });
+
+  test("TIER2_BUDGET constant equals floor", () => {
+    expect(TIER2_BUDGET).toBe(12_000);
   });
 });
 
 describe("tier 2 budget", () => {
   test("TIER2_BUDGET is used as reservation in computeHistoryBudget", () => {
-    // Budget formula subtracts TIER2_BUDGET (12K combined pool)
-    const withTier2 = computeHistoryBudget(10000, 10000);
+    const CTX = 120_000;
+    // Budget formula subtracts computeTier2Budget(120K) = 12K
+    const withTier2 = computeHistoryBudget(10000, 10000, CTX);
     // 120000 - 10000 - 10000 - 12000 - 1000 = 87000
     expect(withTier2).toBe(87000);
   });

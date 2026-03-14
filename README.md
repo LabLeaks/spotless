@@ -8,13 +8,14 @@ npm install -g @lableaks/spotless
 spotless code --agent myagent
 ```
 
-> **v0.1.0 — Early release.** The core works but expect breaking changes. Back up `~/.spotless/` if you have data you care about.
+> **v0.1.2 — Early release.** The core works but expect breaking changes. Back up `~/.spotless/` if you have data you care about.
 >
-> **Token usage:** Spotless replaces Claude Code's messages with a longer history trace, which likely increases token consumption. We haven't measured the impact yet and plan to investigate caching behavior soon. Recommended for **Max plan** subscribers who aren't worried about usage limits.
+> **Token usage:** Spotless replaces Claude Code's messages with a longer history trace, which increases token consumption. Use `--max-context` to control the budget. Recommended for **Max plan** subscribers; API-pricing users should set a lower budget (e.g. `--max-context 120000`).
 
 - [The problem](#the-problem)
 - [What Spotless fixes](#what-spotless-fixes)
 - [How it works](#how-it-works)
+- [Context budget](#context-budget)
 - [Quick start](#quick-start)
 - [CLI reference](#cli-reference)
 - [Dashboard](#dashboard)
@@ -120,6 +121,26 @@ Nothing is erased — the raw archive is append-only and everything is still in 
 
 The dashboard's Health tab shows current pressure levels. A future release will add a menubar indicator so you can see pressure at a glance without opening the dashboard.
 
+### Context budget
+
+`--max-context` controls how many tokens Spotless assembles into each API request. The default is **500,000** — designed for 1M context models where Claude Code compacts at ~80% of the window.
+
+The history trace fills whatever's left after the system prompt, tools, and memories are accounted for:
+
+```
+history budget = max-context - system prompt (~15K) - tools (~30K) - tier 2 memories (10%) - overhead (1K)
+```
+
+With the default 500K budget, your agent retains ~404K tokens of raw conversation — actual message pairs from recent and past sessions. Oldest turns trim from the front as the budget fills, the way a colleague naturally loses detail about what happened months ago. Nothing is erased from the archive; trimmed turns just stop appearing in the history trace until they're needed via memory recall.
+
+**If you're paying per-token (API pricing),** a lower budget saves money:
+
+```bash
+spotless start --max-context 120000   # ~62K history, similar to pre-1M behavior
+```
+
+**If you're on a Max plan,** the default 500K gives you maximum conversational memory at no extra cost. Consolidation pressure still triggers at the same pace regardless of budget — memories are created early relative to when turns would age out of the history window.
+
 ## Requirements
 
 - [Bun](https://bun.sh) >= 1.0 (runtime — Spotless uses Bun's built-in SQLite and HTTP server)
@@ -158,12 +179,13 @@ That's it. Your agent now has persistent memory.
 
 | Command | Description |
 |---------|-------------|
-| `spotless start [--port 9000] [--no-digest]` | Start the proxy. |
+| `spotless start [--port 9000] [--no-digest] [--max-context <tokens>]` | Start the proxy. See [Context budget](#context-budget) for `--max-context`. |
 | `spotless stop` | Stop the running proxy. |
 | `spotless status` | Check if the proxy is running. |
 | `spotless code [--agent <name>] [--port 9000] [-- ...claude args]` | Launch Claude Code through the proxy. Auto-starts proxy if needed. |
 | `spotless agents` | List all agents with DB sizes. |
 | `spotless digest [--agent <name>] [--dry-run] [--model haiku\|sonnet]` | Manually trigger a digest pass (memory consolidation). |
+| `spotless logs [--agent <name>]` | Collect proxy logs and diagnostics into a report file. |
 | `spotless repair [--agent <name>] [--fix] [--purge-history]` | Diagnose and repair database issues. |
 
 ## Dashboard
@@ -221,9 +243,28 @@ The built-in mechanisms are complementary — CLAUDE.md and project instructions
 ## Development
 
 ```bash
-bun test              # 384 unit tests
+bun test              # unit tests (380+, no API calls)
+bun run test:live     # live tests (requires Claude Code + tmux, hits real API)
 bun run typecheck     # type-check
 ```
+
+### Live tests
+
+`test/live/` contains end-to-end tests that run real Claude Code through the real proxy. These are Playwright-for-terminals — they use tmux to drive interactive Claude Code sessions, send keystrokes, capture pane output, and assert on results.
+
+**Requirements:** Claude Code installed and authenticated, tmux, Max plan (tests cost tokens).
+
+**What they test:**
+- Prompt mode: round-trip archival, cross-session memory, multi-session history
+- Interactive mode: multi-turn conversations, state detection (idle/working/exited), session lifecycle
+- Context budget: proxy starts and processes requests with default and custom `--max-context` values
+
+The harness (`test/live/harness.ts`) provides:
+- `runPrompt(text)` — run `claude -p` through the proxy, return output + DB access
+- `createLiveSession()` — start an interactive Claude session in tmux with full control: `.type()`, `.submit()`, `.waitForIdle()`, `.capture()`, `.state()`, `.db()`
+- Automatic proxy lifecycle, bypass-permissions handling, and cleanup
+
+Live tests are excluded from `bun test` — they only run via `bun run test:live`.
 
 For architecture details, see [`_project/adrs/`](_project/adrs/) and the [PRD](_project/prds/spotless-prd.md).
 

@@ -35,10 +35,12 @@ function cmdHelp(): void {
 
   COMMANDS
 
-    spotless start [--port 9000] [--no-digest]
+    spotless start [--port 9000] [--no-digest] [--max-context <tokens>]
         Start the proxy. Listens for Claude Code requests and archives
         everything to per-agent SQLite. Background digesting runs every 5m
         unless --no-digest is passed.
+        --max-context: target input token budget (default 500000).
+        Set lower for tighter memory pressure or to reduce token usage.
 
     spotless stop
         Stop the running proxy.
@@ -135,6 +137,7 @@ interface ParsedArgs {
   model: string | null;
   purgeHistory: boolean;
   fix: boolean;
+  maxContext: number | null;
 }
 
 function parseArgs(args: string[]): ParsedArgs {
@@ -147,6 +150,7 @@ function parseArgs(args: string[]): ParsedArgs {
   let model: string | null = null;
   let purgeHistory = false;
   let fix = false;
+  let maxContext: number | null = null;
 
   // Split on -- to separate spotless args from claude args
   const dashDashIdx = args.indexOf("--");
@@ -174,15 +178,19 @@ function parseArgs(args: string[]): ParsedArgs {
     } else if (spotlessArgs[i] === "--model" && spotlessArgs[i + 1]) {
       model = spotlessArgs[i + 1]!;
       i++;
+    } else if (spotlessArgs[i] === "--max-context" && spotlessArgs[i + 1]) {
+      const val = parseInt(spotlessArgs[i + 1]!, 10);
+      if (!isNaN(val) && val > 0) maxContext = val;
+      i++;
     }
   }
 
-  return { command, port, agent, claudeArgs, noDigest, dryRun, model, purgeHistory, fix };
+  return { command, port, agent, claudeArgs, noDigest, dryRun, model, purgeHistory, fix, maxContext };
 }
 
 // --- Commands ---
 
-function cmdStart(port: number, noDigest: boolean): void {
+function cmdStart(port: number, noDigest: boolean, maxContext: number | null): void {
   // Check for existing instance
   const existing = readPid();
   if (existing && isProcessRunning(existing.pid)) {
@@ -193,7 +201,7 @@ function cmdStart(port: number, noDigest: boolean): void {
   // Clean up stale PID file
   if (existing) removePid();
 
-  const proxy = startProxy({ port });
+  const proxy = startProxy({ port, ...(maxContext != null && { maxContext }) });
   writePid(port);
 
   // Start background digesting unless disabled
@@ -360,7 +368,7 @@ function releaseSessionLock(agentName: string): void {
   }
 }
 
-async function cmdCode(port: number, agentArg: string | null, claudeArgs: string[]): Promise<void> {
+async function cmdCode(port: number, agentArg: string | null, claudeArgs: string[], maxContext: number | null): Promise<void> {
   // Resolve agent name — interactive if not provided
   let agentName: string;
   if (agentArg) {
@@ -395,7 +403,9 @@ async function cmdCode(port: number, agentArg: string | null, claudeArgs: string
     // Start proxy in background
     console.error(`[spotless] Starting proxy on port ${port}...`);
     const selfPath = process.argv[1] ?? "spotless";
-    const child = Bun.spawn(["bun", "run", selfPath, "start", "--port", String(port)], {
+    const startArgs = ["bun", "run", selfPath, "start", "--port", String(port)];
+    if (maxContext != null) startArgs.push("--max-context", String(maxContext));
+    const child = Bun.spawn(startArgs, {
       stdio: ["ignore", "ignore", "ignore"],
     });
     child.unref();
@@ -646,11 +656,11 @@ function cmdLogs(agentArg: string | null): void {
 
 // --- Main ---
 
-const { command, port, agent, claudeArgs, noDigest, dryRun, model, purgeHistory: purgeHistoryFlag, fix: fixFlag } = parseArgs(process.argv.slice(2));
+const { command, port, agent, claudeArgs, noDigest, dryRun, model, purgeHistory: purgeHistoryFlag, fix: fixFlag, maxContext } = parseArgs(process.argv.slice(2));
 
 switch (command) {
   case "start":
-    cmdStart(port, noDigest);
+    cmdStart(port, noDigest, maxContext);
     break;
   case "stop":
     cmdStop();
@@ -659,7 +669,7 @@ switch (command) {
     cmdStatus();
     break;
   case "code":
-    await cmdCode(port, agent, claudeArgs);
+    await cmdCode(port, agent, claudeArgs, maxContext);
     break;
   case "agents":
     cmdAgents();

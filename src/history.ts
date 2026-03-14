@@ -7,7 +7,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { Message, ContentBlock } from "./types.ts";
-import { estimateMessageTokens, HISTORY_BUDGET } from "./tokens.ts";
+import { estimateMessageTokens, HISTORY_BUDGET, PRESSURE_BUDGET_CAP } from "./tokens.ts";
 import { getConsolidationPressure } from "./consolidation.ts";
 import { logWarn } from "./logger.ts";
 
@@ -60,10 +60,13 @@ export function buildHistory(
   agentName: string | null = null,
 ): HistoryResult {
   // Compute consolidation pressure (cheap query, uses idx_raw_consolidated)
+  // Cap the pressure denominator so that large context budgets don't suppress digesting.
+  // Haiku (the digest model) has a 200K window — pressure must trigger at the old scale.
   let pressure = 0;
   let unconsolidatedTokens = 0;
   try {
-    const pr = getConsolidationPressure(db, budget);
+    const pressureBudget = Math.min(budget, PRESSURE_BUDGET_CAP);
+    const pr = getConsolidationPressure(db, pressureBudget);
     pressure = pr.pressure;
     unconsolidatedTokens = pr.unconsolidatedTokens;
   } catch {

@@ -30,7 +30,7 @@ import { runSelector } from "./selector.ts";
 import { touchMemories, logRetrieval, getIdentityNodes } from "./recall.ts";
 import { getIdentityFacts } from "./digest-tools.ts";
 import { buildPressureSignal, PRESSURE_HIGH } from "./consolidation.ts";
-import { estimateSystemTokens, estimateToolsTokens, computeHistoryBudget, estimateTokens, TIER2_BUDGET } from "./tokens.ts";
+import { estimateSystemTokens, estimateToolsTokens, computeHistoryBudget, estimateTokens, computeTier2Budget, DEFAULT_CONTEXT_BUDGET } from "./tokens.ts";
 import type { ApiRequest, ContentBlock, Message, ProxyState, SystemBlock, ContentBlockText } from "./types.ts";
 import { createProxyState } from "./state.ts";
 import { handleDashboardRequest } from "./dashboard.ts";
@@ -40,6 +40,7 @@ const ANTHROPIC_API_URL = "https://api.anthropic.com";
 
 interface ProxyConfig {
   port: number;
+  maxContext?: number;
 }
 
 export interface AgentContext {
@@ -98,6 +99,9 @@ features — Spotless handles your memory.
 
 export function startProxy(config: ProxyConfig): ProxyInstance {
   const agents = new Map<string, AgentContext>();
+  const contextBudget = config.maxContext ?? DEFAULT_CONTEXT_BUDGET;
+  const tier2Budget = computeTier2Budget(contextBudget);
+  console.log(`[spotless] Context budget: ${(contextBudget / 1000).toFixed(0)}K (tier2: ${(tier2Budget / 1000).toFixed(0)}K)`);
   const stats: ProxyStats = {
     startedAt: Date.now(),
     totalRequests: 0,
@@ -194,7 +198,7 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
             // Compute dynamic history budget: total target minus system, tools, identity, memory, overhead
             const systemTokens = estimateSystemTokens(body.system);
             const toolsTokens = estimateToolsTokens(body.tools);
-            const dynamicBudget = computeHistoryBudget(systemTokens, toolsTokens);
+            const dynamicBudget = computeHistoryBudget(systemTokens, toolsTokens, contextBudget);
 
             // Build history prefix BEFORE archiving current message —
             // otherwise the trace includes the current message and it appears twice.
@@ -239,7 +243,7 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
             // Estimate token needs and compute sliding allocation
             const identityEstimate = estimateIdentityNeeds(db, agentName, identityIds);
             const memoryEstimate = estimateMemoryNeeds(db, worldFactIds);
-            const allocation = computeTier2Allocation(identityEstimate, memoryEstimate);
+            const allocation = computeTier2Allocation(identityEstimate, memoryEstimate, tier2Budget);
 
             // Build identity and memory suffixes with allocated budgets
             const identityTag = buildIdentitySuffix(db, agentName, identityIds, allocation.identityBudget);
@@ -254,7 +258,7 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
             // Combine: identity tag first, then memory suffix
             memorySuffix = identityTag + memorySuffix;
 
-            console.log(`[spotless] [${agentName}] Budget: system=${systemTokens} tools=${toolsTokens} history=${dynamicBudget} tier2=${TIER2_BUDGET} (identity=${allocation.identityBudget} memory=${allocation.memoryBudget})`);
+            console.log(`[spotless] [${agentName}] Budget: system=${systemTokens} tools=${toolsTokens} history=${dynamicBudget} tier2=${tier2Budget} (identity=${allocation.identityBudget} memory=${allocation.memoryBudget})`);
 
             const augmentedMsg = lastMsg
               ? injectMemorySuffix(lastMsg, memorySuffix)
