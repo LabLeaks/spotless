@@ -732,29 +732,9 @@ function placeCacheBreakpoints(body: ApiRequest): void {
 
   // Breakpoint 2: last system block
   if (Array.isArray(body.system) && body.system.length > 0) {
-    body.system[body.system.length - 1].cache_control = { type: "ephemeral" };
+    const lastSystem = body.system[body.system.length - 1]!;
+    lastSystem.cache_control = { type: "ephemeral" };
   }
-}
-
-/**
- * Diagnostic: dump request summary for debugging 400 errors.
- */
-function dumpRequestSummary(body: ApiRequest): void {
-  const msgSummary = body.messages.map((m, i) => {
-    const content = typeof m.content === "string"
-      ? `text(${m.content.length})`
-      : m.content.map(b => {
-          if (b.type === "text") return `text(${(b as {text:string}).text.length}ch,"${(b as {text:string}).text.slice(0,60)}...")`;
-          return `${b.type}(${JSON.stringify(b).length})`;
-        }).join("+");
-    return `  [${i}] ${m.role}: ${content}`;
-  }).join("\n");
-  const systemType = Array.isArray(body.system) ? `SystemBlock[${body.system.length}]` : typeof body.system;
-  const toolCount = Array.isArray(body.tools) ? body.tools.length : 0;
-  // Check for any unexpected top-level keys
-  const knownKeys = new Set(["model","system","messages","max_tokens","temperature","tools","tool_choice","stream","metadata","stop_sequences","top_k","top_p","thinking"]);
-  const extraKeys = Object.keys(body).filter(k => !knownKeys.has(k));
-  console.log(`[spotless] Request dump:\n  model: ${body.model}\n  system: ${systemType}\n  tools: ${toolCount}\n  extra_keys: [${extraKeys.join(", ")}]\n  messages (${body.messages.length}):\n${msgSummary}`);
 }
 
 function tryParseJson(s: string): unknown {
