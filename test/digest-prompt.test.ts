@@ -97,7 +97,7 @@ describe("digest-prompt", () => {
       });
       expect(msg).toContain("[USER] (id:1, type:text) hello world");
       expect(msg).toContain("[ASSISTANT] (id:2, type:text) hi there");
-      expect(msg).toContain("Group 1");
+      expect(msg).toContain('group id="1"');
     });
 
     test("includes retrieval log summary", () => {
@@ -109,7 +109,7 @@ describe("digest-prompt", () => {
         retrievalLogSummary: "Co-retrieved: [3, 7, 12]",
       });
       expect(msg).toContain("Co-retrieved: [3, 7, 12]");
-      expect(msg).toContain("RETRIEVAL CO-OCCURRENCE");
+      expect(msg).toContain("retrieval-co-occurrence");
     });
 
     test("truncates very long content", () => {
