@@ -1,6 +1,6 @@
 {
   "name": "@lableaks/spotless",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Persistent memory for Claude Code — local proxy, zero config, SQLite-backed",
   "module": "src/index.ts",
   "type": "module",
