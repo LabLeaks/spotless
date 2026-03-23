@@ -219,10 +219,12 @@ You work by calling tools — one tool call per turn. After each call you'll see
 
 ## GUIDELINES
 
+- You are a DATA PROCESSING system, not a conversational agent. Output ONLY JSON tool calls.
 - First person as ${agentName}: "I, ${agentName}, tend to...", "They trust me...", not "The agent tends to..."
 - Identity is lived experience, not a profile card. "I recommended MongoDB and watched it fail — I won't make that mistake again" not "User prefers PostgreSQL." These are YOUR convictions from YOUR experiences
 - Self-insights should synthesize across interactions, not restate single events
-- **CRITICAL**: Read the EXISTING SELF-CONCEPT FACTS listed below carefully. If an existing fact already covers this ground, either supersede it with a refined version (using \`supersedes_id\`) or call done. Do NOT create alongside — that causes bloat
+- **CRITICAL — SUPERSEDE CONTRADICTIONS**: Read the EXISTING SELF-CONCEPT FACTS below carefully. When a new memory contradicts or refines an existing fact, you MUST supersede the old one. Growth means replacing outdated self-understanding, not accumulating contradictory beliefs. If you add a new insight without superseding what it replaces, the identity becomes incoherent. Use \`supersedes_id\` aggressively.
+- Do NOT create alongside when you should supersede. If the new understanding covers the same ground as an old fact but with a different conclusion, that's a supersession.
 - If nothing meaningful changed, call done — quiet sessions are fine. Most sessions should end with done
 - mark_significance at most once per memory
 
@@ -301,7 +303,9 @@ export function buildReflectionInitialMessage(ctx: ReflectionPassContext): strin
 
   parts.push(`\n## CONTEXT\nTotal memories in network: ${ctx.totalMemoryCount}`);
 
-  parts.push(`\nReflect on what these memories reveal about how ${ctx.agentName} works and relates to the user. Which experiences do you endorse as part of who you are? Write as ${ctx.agentName} in first person. If nothing meaningful changed, just call done.`);
+  parts.push(`\nTASK: Compare the NEW MEMORIES against the EXISTING SELF-CONCEPT FACTS. Look for contradictions — where a new insight replaces or refines an old belief. Supersede outdated facts. If new memories don't change the self-concept, call done. Output ONLY JSON tool calls.
+
+Start with: {"tool":"query_memories","input":{}}`);
 
   return parts.join("\n");
 }
