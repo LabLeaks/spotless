@@ -21,7 +21,7 @@ export interface HistoryResult {
 const SESSION_BOUNDARY_MARKER = "<session-boundary />";
 const SESSION_DIVIDER = "\n\n--- new session ---\n\n";
 
-function buildMemoryPreamble(agentName: string | null): string {
+export function buildMemoryPreamble(agentName: string | null): string {
   const identity = agentName
     ? `Your name is "${agentName}". `
     : "";
@@ -339,7 +339,7 @@ function getToolUseIds(msg: Message): string[] {
  * placeholders to maintain alternation — this keeps old requests as history
  * rather than making them look like current multi-part requests.
  */
-function enforceAlternation(messages: Message[]): Message[] {
+export function enforceAlternation(messages: Message[]): Message[] {
   if (messages.length === 0) return [];
 
   const result: Message[] = [messages[0]!];

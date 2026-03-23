@@ -6,8 +6,9 @@
  */
 
 import type { ContentBlockToolResult, Message, ProxyState } from "./types.ts";
+import { createWorkingSet } from "./working-set.ts";
 
-export function createProxyState(initialMessageGroup: number): ProxyState {
+export function createProxyState(initialMessageGroup: number, initialSessionId: number = 0): ProxyState {
   return {
     cachedBase: null,
     toolLoopChain: [],
@@ -18,6 +19,9 @@ export function createProxyState(initialMessageGroup: number): ProxyState {
     selectorRunning: null,
     lastSystemPrompt: null,
     selectorGeneration: 0,
+    currentSessionId: initialSessionId,
+    currentExchangeStart: null,
+    workingSet: createWorkingSet(),
   };
 }
 
@@ -94,4 +98,5 @@ export function resetState(state: ProxyState): void {
   state.lastSelectorResult = null;
   state.selectorRunning = null;
   state.lastSystemPrompt = null;
+  state.currentExchangeStart = null;
 }

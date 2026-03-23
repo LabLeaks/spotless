@@ -22,6 +22,8 @@ import { generateAgentName, validateAgentName, listAgents, getAgentDbPath } from
 import { createDigestLoop } from "./digest-loop.ts";
 import { runDigestPass } from "./digester.ts";
 import { diagnose, purgeHistory, repairHistory } from "./repair.ts";
+import { backfillExchanges } from "./exchange.ts";
+import { openDb, initSchema } from "./db.ts";
 import { LOG_FILE } from "./logger.ts";
 import { Database } from "bun:sqlite";
 
@@ -71,6 +73,11 @@ function cmdHelp(): void {
                and dead retry sessions from history archive).
         --purge-history: nuclear option — clears ALL raw events
                while preserving memories, identity, and associations.
+
+    spotless backfill [--agent <name>]
+        Retroactively generate Level 1 exchange summaries for existing
+        agents. Enables fractal context composition for pre-Aperture data.
+        Idempotent — safe to re-run.
 
     spotless help
         Show this help.
@@ -210,8 +217,8 @@ function cmdStart(port: number, noDigest: boolean, maxContext: number | null): v
     digestLoop = createDigestLoop();
     digestLoop.start(() => proxy.getAgentNames());
 
-    // Wire trim-triggered digesting: when pressure is high and trim occurred, escalate
-    proxy.onHistoryTrimmed = (agentName: string) => {
+    // Wire pressure-triggered digesting: when consolidation pressure is high, escalate
+    proxy.onPressureEscalation = (agentName: string) => {
       digestLoop!.escalate(agentName);
     };
   }
@@ -654,6 +661,25 @@ function cmdLogs(agentArg: string | null): void {
   console.log(`[spotless] Report saved to ${outPath}`);
 }
 
+function cmdBackfill(agentName: string | null): void {
+
+  const agents = agentName ? [{ name: agentName }] : listAgents();
+  if (agents.length === 0) {
+    console.log("[spotless] No agents found.");
+    return;
+  }
+
+  for (const { name } of agents) {
+    const dbPath = getAgentDbPath(name);
+    const db = openDb(dbPath);
+    initSchema(db);
+    console.log(`[spotless] Backfilling agent "${name}"...`);
+    const result = backfillExchanges(db);
+    console.log(`[spotless]   ${result.processed} exchanges processed, ${result.skipped} skipped, ${result.total} total`);
+    db.close();
+  }
+}
+
 // --- Main ---
 
 const { command, port, agent, claudeArgs, noDigest, dryRun, model, purgeHistory: purgeHistoryFlag, fix: fixFlag, maxContext } = parseArgs(process.argv.slice(2));
@@ -682,6 +708,9 @@ switch (command) {
     break;
   case "repair":
     cmdRepair(agent, purgeHistoryFlag, fixFlag);
+    break;
+  case "backfill":
+    cmdBackfill(agent);
     break;
   case "help":
   case "--help":

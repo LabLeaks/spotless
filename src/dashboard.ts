@@ -102,6 +102,10 @@ export function handleDashboardRequest(
         return jsonResponse(apiAgentConsolidation(db));
       }
 
+      if (sub === "context") {
+        return jsonResponse(apiAgentContext(db));
+      }
+
       return jsonResponse({ error: "Unknown endpoint" }, 404);
     } finally {
       db.close();
@@ -313,6 +317,42 @@ function apiAgentConsolidation(db: Database) {
   };
 }
 
+function apiAgentContext(db: Database) {
+  const rows = db.query(`
+    SELECT start_group, end_group, session_id, level, tokens
+    FROM exchange_levels
+    ORDER BY start_group ASC, level ASC
+  `).all() as { start_group: number; end_group: number; session_id: number | null; level: number; tokens: number }[];
+
+  const levelCounts: Record<number, number> = {};
+  const totalTokens: Record<number, number> = {};
+
+  for (const row of rows) {
+    levelCounts[row.level] = (levelCounts[row.level] ?? 0) + 1;
+    totalTokens[row.level] = (totalTokens[row.level] ?? 0) + row.tokens;
+  }
+
+  // Aggregate per exchange (unique start_group, end_group)
+  const exchangeMap = new Map<string, { start_group: number; end_group: number; session_id: number | null; levels: number[]; l1_tokens: number }>();
+  for (const row of rows) {
+    const key = `${row.start_group}-${row.end_group}`;
+    let entry = exchangeMap.get(key);
+    if (!entry) {
+      entry = { start_group: row.start_group, end_group: row.end_group, session_id: row.session_id, levels: [], l1_tokens: 0 };
+      exchangeMap.set(key, entry);
+    }
+    entry.levels.push(row.level);
+    if (row.level === 1) entry.l1_tokens = row.tokens;
+  }
+
+  return {
+    exchanges: Array.from(exchangeMap.values()),
+    levelCounts,
+    totalTokens,
+    totalExchanges: exchangeMap.size,
+  };
+}
+
 function apiAgentHistory(db: Database, limit: number, offset: number, query?: string) {
   // Total count for pagination
   const totalRow = db.query("SELECT COUNT(*) as c FROM raw_events").get() as { c: number };
@@ -473,6 +513,7 @@ function renderAgentPage(agentName: string): string {
     <button class="tab" data-tab="digests">Digests</button>
     <button class="tab" data-tab="selector">Selector</button>
     <button class="tab" data-tab="health">Health</button>
+    <button class="tab" data-tab="context">Context</button>
   </nav>
 
   <!-- Memories Tab -->
@@ -535,6 +576,13 @@ function renderAgentPage(agentName: string): string {
     </div>
   </section>
 
+  <!-- Context Tab -->
+  <section id="tab-context" class="tab-content">
+    <div id="context-content">
+      <p class="loading">Loading context composition data...</p>
+    </div>
+  </section>
+
   <script>
     const AGENT = '${agentName}';
 
@@ -550,6 +598,7 @@ function renderAgentPage(agentName: string): string {
         if (btn.dataset.tab === 'digests') loadDigests();
         if (btn.dataset.tab === 'selector') loadSelector();
         if (btn.dataset.tab === 'health') loadHealth();
+        if (btn.dataset.tab === 'context') loadContext();
       });
     });
 
@@ -909,6 +958,52 @@ function renderAgentPage(agentName: string): string {
         .catch(err => {
           document.getElementById('health-content').innerHTML =
             '<p class="error">Failed to load health data: ' + err.message + '</p>';
+        });
+    }
+
+    // --- Context ---
+    function loadContext() {
+      fetch('/_dashboard/api/agent/' + AGENT + '/context')
+        .then(r => r.json())
+        .then(data => {
+          const container = document.getElementById('context-content');
+          let html = '<div class="health-grid">';
+
+          // Summary card
+          html += '<div class="health-card">';
+          html += '<h3>Exchange Levels</h3>';
+          html += '<div class="health-stats">';
+          html += '<div class="stat-row"><span class="stat-label">Total exchanges</span><span class="stat-value">' + data.totalExchanges + '</span></div>';
+          for (const [level, count] of Object.entries(data.levelCounts || {})) {
+            const tokens = data.totalTokens[level] || 0;
+            html += '<div class="stat-row"><span class="stat-label">Level ' + level + '</span><span class="stat-value">' + count + ' (' + Math.round(tokens / 1000) + 'k tokens)</span></div>';
+          }
+          html += '</div></div>';
+
+          html += '</div>';
+
+          // Exchanges table
+          if (data.exchanges && data.exchanges.length > 0) {
+            html += '<h3>Exchanges (' + data.exchanges.length + ')</h3>';
+            html += '<table><thead><tr><th>Groups</th><th>Session</th><th>Levels</th><th>L1 Tokens</th></tr></thead><tbody>';
+            for (const ex of data.exchanges) {
+              html += '<tr>';
+              html += '<td>' + ex.start_group + '–' + ex.end_group + '</td>';
+              html += '<td>' + (ex.session_id ?? '-') + '</td>';
+              html += '<td>' + ex.levels.map(l => 'L' + l).join(', ') + '</td>';
+              html += '<td>' + ex.l1_tokens + '</td>';
+              html += '</tr>';
+            }
+            html += '</tbody></table>';
+          } else {
+            html += '<p>No exchange levels data yet. Run <code>spotless backfill</code> to generate.</p>';
+          }
+
+          container.innerHTML = html;
+        })
+        .catch(err => {
+          document.getElementById('context-content').innerHTML =
+            '<p class="error">Failed to load context data: ' + err.message + '</p>';
         });
     }
 

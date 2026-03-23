@@ -83,6 +83,25 @@ CREATE TABLE IF NOT EXISTS identity_nodes (
 );
 `;
 
+// --- Exchange Levels (Aperture / Sprint 11) ---
+
+const EXCHANGE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS exchange_levels (
+  id INTEGER PRIMARY KEY,
+  start_group INTEGER NOT NULL,
+  end_group INTEGER NOT NULL,
+  session_id INTEGER,
+  level INTEGER NOT NULL CHECK (level IN (1, 2, 3)),
+  content TEXT NOT NULL,
+  tokens INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(start_group, end_group, level)
+);
+
+CREATE INDEX IF NOT EXISTS idx_exchange_levels_session ON exchange_levels(session_id);
+CREATE INDEX IF NOT EXISTS idx_exchange_levels_groups ON exchange_levels(start_group, end_group);
+`;
+
 // --- Diagnostic tables ---
 
 const DIAGNOSTIC_SCHEMA = `
@@ -387,6 +406,9 @@ export function initSchema(db: Database): void {
 
   // Migrate existing DBs: add consolidated column to raw_events, backfill from memory_sources
   migrateConsolidated(db);
+
+  // Exchange levels table (Aperture / Sprint 11)
+  db.run(EXCHANGE_SCHEMA);
 }
 
 /**
@@ -396,4 +418,15 @@ export function initSchema(db: Database): void {
 export function getMaxMessageGroup(db: Database): number {
   const row = db.query("SELECT COALESCE(MAX(message_group), 0) as max_group FROM raw_events").get() as { max_group: number } | null;
   return row?.max_group ?? 0;
+}
+
+/**
+ * Count session boundaries in the database.
+ * Used to initialize the session counter on proxy startup.
+ */
+export function getSessionCount(db: Database): number {
+  const row = db.query(
+    "SELECT COUNT(*) as cnt FROM raw_events WHERE content = '<session-boundary />' AND is_subagent = 0"
+  ).get() as { cnt: number } | null;
+  return row?.cnt ?? 0;
 }

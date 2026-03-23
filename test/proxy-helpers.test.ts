@@ -213,16 +213,17 @@ describe("augmentSystemPrompt", () => {
     expect(orientationIdx).toBeLessThan(originalIdx);
   });
 
-  test("prepends orientation block to SystemBlock[] system prompt", () => {
+  test("appends orientation to last text block in SystemBlock[] system prompt", () => {
     const blocks = [
       { type: "text" as const, text: "Original system content" },
     ];
     const result = augmentSystemPrompt(blocks, "nova");
     expect(Array.isArray(result)).toBe(true);
     const arr = result as { type: string; text: string }[];
-    expect(arr.length).toBe(2);
+    // Same block count (append to existing, not a new block)
+    expect(arr.length).toBe(1);
+    expect(arr[0]!.text).toContain("Original system content");
     expect(arr[0]!.text).toContain("<spotless-orientation>");
-    expect(arr[1]!.text).toBe("Original system content");
   });
 
   test("orientation mentions <your identity> tag", () => {

@@ -58,7 +58,7 @@ describe("pressure signal", () => {
     const signal = buildPressureSignal(0.9, 130000);
     expect(signal).toContain('<memory-pressure level="high">');
     expect(signal).toContain("130k tokens");
-    expect(signal).toContain("slow down");
+    expect(signal).toContain("pause");
     expect(signal).toContain("</memory-pressure>");
   });
 

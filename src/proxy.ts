@@ -23,13 +23,16 @@ import {
   resetState,
 } from "./state.ts";
 import { parseAgentFromUrl, stripAgentPrefix, getAgentDbPath } from "./agent.ts";
-import { openDb, initSchema, getMaxMessageGroup } from "./db.ts";
+import { openDb, initSchema, getMaxMessageGroup, getSessionCount } from "./db.ts";
 import { buildHistory } from "./history.ts";
+import { composeContext } from "./composer.ts";
 import { buildMemorySuffix, buildIdentitySuffix, computeTier2Allocation, injectMemorySuffix } from "./memory-suffix.ts";
 import { runSelector } from "./selector.ts";
 import { touchMemories, logRetrieval, getIdentityNodes } from "./recall.ts";
 import { getIdentityFacts } from "./digest-tools.ts";
 import { buildPressureSignal, PRESSURE_HIGH } from "./consolidation.ts";
+import { finalizeExchange } from "./exchange.ts";
+import { updateWorkingSetFromBlocks, updateWorkingSetFromUserMessage, decayWorkingSet } from "./working-set.ts";
 import { estimateSystemTokens, estimateToolsTokens, computeHistoryBudget, estimateTokens, computeTier2Budget, DEFAULT_CONTEXT_BUDGET } from "./tokens.ts";
 import type { ApiRequest, ContentBlock, Message, ProxyState, SystemBlock, ContentBlockText } from "./types.ts";
 import { createProxyState } from "./state.ts";
@@ -60,7 +63,7 @@ export interface ProxyInstance {
   getAgentNames: () => string[];
   getStats: () => ProxyStats;
   getAgentContexts: () => Map<string, AgentContext>;
-  onHistoryTrimmed: ((agentName: string) => void) | null;
+  onPressureEscalation: ((agentName: string) => void) | null;
   onAgentInit: ((agentName: string) => void) | null;
 }
 
@@ -93,8 +96,17 @@ features — Spotless handles your memory.
     return orientation + "\n\n" + system;
   }
 
-  // SystemBlock[] — prepend as first block
-  return [{ type: "text", text: orientation } as SystemBlock, ...system];
+  // SystemBlock[] — append to last text block (not a new block) to preserve
+  // CC's cache_control breakpoint structure. Adding a new block causes API 400s
+  // because it changes the block count/positions CC expects.
+  const result = system.map(b => ({ ...b })); // shallow clone blocks
+  const lastTextIdx = result.findLastIndex(b => b.type === "text");
+  if (lastTextIdx >= 0) {
+    result[lastTextIdx] = { ...result[lastTextIdx]!, text: result[lastTextIdx]!.text + "\n\n" + orientation };
+  } else {
+    result.push({ type: "text", text: orientation });
+  }
+  return result;
 }
 
 export function startProxy(config: ProxyConfig): ProxyInstance {
@@ -107,7 +119,7 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
     totalRequests: 0,
     agentRequests: new Map(),
   };
-  let onHistoryTrimmedFn: ((agentName: string) => void) | null = null;
+  let onPressureEscalationFn: ((agentName: string) => void) | null = null;
   let onAgentInitFn: ((agentName: string) => void) | null = null;
 
   function getOrInitAgent(agentName: string): AgentContext {
@@ -119,7 +131,7 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
     const db = openDb(dbPath);
     initSchema(db);
 
-    const state = createProxyState(getMaxMessageGroup(db));
+    const state = createProxyState(getMaxMessageGroup(db), getSessionCount(db));
     state.agentName = agentName;
 
     const ctx: AgentContext = { db, state };
@@ -180,7 +192,18 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
 
         // Reset state on new conversation + archive session boundary
         if (body.messages && isNewConversation(body.messages)) {
+          // Finalize previous exchange before resetting — each claude -p invocation
+          // is a new session, so the previous exchange would never get finalized
+          // by the "next human_turn" trigger.
+          if (state.currentExchangeStart !== null) {
+            try {
+              finalizeExchange(db, state.currentExchangeStart, state.currentMessageGroup, state.currentSessionId);
+            } catch (err) {
+              logWarn(`[spotless] [${agentName}] Exchange finalization on session end failed: ${err}`);
+            }
+          }
           archiveSessionBoundary(db, nextMessageGroup(state));
+          state.currentSessionId++;
           resetState(state);
           state.currentMessageGroup = getMaxMessageGroup(db);
         }
@@ -192,6 +215,21 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
           if (classification === "human_turn") {
             const lastMsg = body.messages[body.messages.length - 1];
 
+            // Finalize previous exchange (generate Level 1) before starting new one.
+            // The previous exchange spans from currentExchangeStart to the group
+            // before this request's group (requestMsgGroup - 1, since requestMsgGroup
+            // was just allocated for the current turn).
+            if (state.currentExchangeStart !== null) {
+              const prevEnd = requestMsgGroup - 1;
+              try {
+                finalizeExchange(db, state.currentExchangeStart, prevEnd, state.currentSessionId);
+              } catch (err) {
+                logWarn(`[spotless] [${agentName}] Exchange finalization failed: ${err}`);
+              }
+            }
+            // Mark start of new exchange
+            state.currentExchangeStart = requestMsgGroup;
+
             // Augment system prompt FIRST — need final form for budget measurement
             body.system = augmentSystemPrompt(body.system, agentName);
 
@@ -200,18 +238,28 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
             const toolsTokens = estimateToolsTokens(body.tools);
             const dynamicBudget = computeHistoryBudget(systemTokens, toolsTokens, contextBudget);
 
-            // Build history prefix BEFORE archiving current message —
+            // Extract user text once — used for composition scoring, working set, and selector
+            const earlyUserText = lastMsg ? extractUserText(lastMsg) : "";
+
+            // Compose context BEFORE archiving current message —
             // otherwise the trace includes the current message and it appears twice.
-            const { messages: historyPrefix, trimmedCount, pressure, unconsolidatedTokens } = buildHistory(db, dynamicBudget, agentName);
+            const { messages: historyPrefix, pressure, unconsolidatedTokens, budgetUsed, fidelityCoverage } =
+              composeContext(db, dynamicBudget, agentName, earlyUserText, state.workingSet);
 
             if (lastMsg) {
               archiveUserMessage(db, lastMsg, requestMsgGroup, false);
             }
 
-            // Fire digest escalation if high pressure AND trim occurred
-            if (trimmedCount > 0 && pressure >= PRESSURE_HIGH && onHistoryTrimmedFn) {
-              console.log(`[spotless] [${agentName}] History trim: ${trimmedCount} messages dropped, pressure ${(pressure * 100).toFixed(0)}%, escalating digest`);
-              onHistoryTrimmedFn(agentName);
+            // Update working set: decay old entries + extract user keywords
+            decayWorkingSet(state.workingSet, requestMsgGroup);
+            if (earlyUserText) {
+              updateWorkingSetFromUserMessage(state.workingSet, earlyUserText, requestMsgGroup);
+            }
+
+            // Fire digest escalation on high pressure (decoupled from trimming — ADR-008)
+            if (pressure >= PRESSURE_HIGH && onPressureEscalationFn) {
+              console.log(`[spotless] [${agentName}] High pressure: ${(pressure * 100).toFixed(0)}%, escalating digest`);
+              onPressureEscalationFn(agentName);
             }
 
             // Get anchor node IDs and identity fact IDs for partitioning
@@ -258,7 +306,7 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
             // Combine: identity tag first, then memory suffix
             memorySuffix = identityTag + memorySuffix;
 
-            console.log(`[spotless] [${agentName}] Budget: system=${systemTokens} tools=${toolsTokens} history=${dynamicBudget} tier2=${tier2Budget} (identity=${allocation.identityBudget} memory=${allocation.memoryBudget})`);
+            console.log(`[spotless] [${agentName}] Budget: system=${systemTokens} tools=${toolsTokens} history=${dynamicBudget} tier2=${tier2Budget} (identity=${allocation.identityBudget} memory=${allocation.memoryBudget}) composed=${budgetUsed} coverage=${JSON.stringify(fidelityCoverage)}`);
 
             const augmentedMsg = lastMsg
               ? injectMemorySuffix(lastMsg, memorySuffix)
@@ -273,17 +321,16 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
 
             // Start selector ASYNC for next turn
             // Skip suggestion mode probes — CC's internal requests that waste selector time
-            const userText = lastMsg ? extractUserText(lastMsg) : "";
-            if (userText && !isSuggestionModeProbe(userText)) {
+            if (earlyUserText && !isSuggestionModeProbe(earlyUserText)) {
               // Abandon any in-flight selector (rapid turn protection)
               state.selectorRunning = null;
               const thisGeneration = ++state.selectorGeneration;
 
               const selectorStart = Date.now();
-              const selectorCueText = userText.slice(0, 200);
+              const selectorCueText = earlyUserText.slice(0, 200);
               state.selectorRunning = runSelector({
                 db,
-                userMessage: userText,
+                userMessage: earlyUserText,
                 systemPrompt: state.lastSystemPrompt ?? undefined,
               })
                 .then(result => {
@@ -375,9 +422,7 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
             forwardBody.messages = [...state.cachedBase, ...state.toolLoopChain];
           }
 
-          // Strip cache_control from system and messages — CC's caching strategy
-          // doesn't apply to our rewritten messages and exceeds the 4-block limit.
-          stripCacheControl(forwardBody);
+          placeCacheBreakpoints(forwardBody);
         }
 
         return await forwardStreaming(
@@ -420,11 +465,11 @@ export function startProxy(config: ProxyConfig): ProxyInstance {
     getAgentContexts() {
       return agents;
     },
-    get onHistoryTrimmed() {
-      return onHistoryTrimmedFn;
+    get onPressureEscalation() {
+      return onPressureEscalationFn;
     },
-    set onHistoryTrimmed(fn: ((agentName: string) => void) | null) {
-      onHistoryTrimmedFn = fn;
+    set onPressureEscalation(fn: ((agentName: string) => void) | null) {
+      onPressureEscalationFn = fn;
     },
     get onAgentInit() {
       return onAgentInitFn;
@@ -568,6 +613,16 @@ async function forwardStreaming(
         archiveAssistantResponse(db, blocks, responseMsgGroup, isSubagent);
       }
 
+      // Log cache metrics (ADR-007 diagnostics)
+      if (tap.cacheReadTokens > 0 || tap.cacheCreationTokens > 0) {
+        console.log(`[spotless] Cache: read=${tap.cacheReadTokens} creation=${tap.cacheCreationTokens}`);
+      }
+
+      // Update working set from tool calls in this response
+      if (!isSubagent && blocks.length > 0) {
+        updateWorkingSetFromBlocks(state.workingSet, blocks, responseMsgGroup);
+      }
+
       // Update proxy state
       if (tap.stopReason) {
         state.lastStopReason = tap.stopReason;
@@ -655,6 +710,51 @@ function stripCacheControl(body: ApiRequest): void {
       }
     }
   }
+}
+
+/**
+ * Replace CC's cache_control markers with strategic breakpoints (ADR-007).
+ *
+ * 1. Strip all existing markers (CC's positions don't align after message rewriting).
+ * 2. Place breakpoint on last tool definition (caches ~30K of tools).
+ * 3. Place breakpoint on last system block (caches tools + system ~45K combined).
+ *
+ * Messages are the uncached tail (they change every turn). 2 of 4 slots used.
+ */
+function placeCacheBreakpoints(body: ApiRequest): void {
+  stripCacheControl(body);
+
+  // Breakpoint 1: last tool definition
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    const last = body.tools[body.tools.length - 1] as Record<string, unknown>;
+    last.cache_control = { type: "ephemeral" };
+  }
+
+  // Breakpoint 2: last system block
+  if (Array.isArray(body.system) && body.system.length > 0) {
+    body.system[body.system.length - 1].cache_control = { type: "ephemeral" };
+  }
+}
+
+/**
+ * Diagnostic: dump request summary for debugging 400 errors.
+ */
+function dumpRequestSummary(body: ApiRequest): void {
+  const msgSummary = body.messages.map((m, i) => {
+    const content = typeof m.content === "string"
+      ? `text(${m.content.length})`
+      : m.content.map(b => {
+          if (b.type === "text") return `text(${(b as {text:string}).text.length}ch,"${(b as {text:string}).text.slice(0,60)}...")`;
+          return `${b.type}(${JSON.stringify(b).length})`;
+        }).join("+");
+    return `  [${i}] ${m.role}: ${content}`;
+  }).join("\n");
+  const systemType = Array.isArray(body.system) ? `SystemBlock[${body.system.length}]` : typeof body.system;
+  const toolCount = Array.isArray(body.tools) ? body.tools.length : 0;
+  // Check for any unexpected top-level keys
+  const knownKeys = new Set(["model","system","messages","max_tokens","temperature","tools","tool_choice","stream","metadata","stop_sequences","top_k","top_p","thinking"]);
+  const extraKeys = Object.keys(body).filter(k => !knownKeys.has(k));
+  console.log(`[spotless] Request dump:\n  model: ${body.model}\n  system: ${systemType}\n  tools: ${toolCount}\n  extra_keys: [${extraKeys.join(", ")}]\n  messages (${body.messages.length}):\n${msgSummary}`);
 }
 
 function tryParseJson(s: string): unknown {

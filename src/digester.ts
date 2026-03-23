@@ -38,6 +38,8 @@ import {
   cleanupConsolidatedFromFts,
 } from "./digest-tools.ts";
 import { getIdentityNodes } from "./recall.ts";
+import { storeExchangeLevel } from "./exchange.ts";
+import { estimateTokens } from "./tokens.ts";
 import { getConsolidationPressure } from "./consolidation.ts";
 import type { DigestResult, MemoryType } from "./types.ts";
 import type { Database } from "bun:sqlite";
@@ -62,6 +64,7 @@ export const CONSOLIDATION_TOOLS = new Set([
   "create_memory", "create_association", "update_memory",
   "merge_memories", "count_human_turns_between",
   "drain_retrieval_log", "supersede_memory",
+  "exchange_summary", "session_summary",
   "done",
 ]);
 
@@ -616,6 +619,36 @@ export function executeTool(
       }
       markSignificance(db, memRef);
       result.reflectionOps++;
+      result.operationsExecuted++;
+      return { ok: true };
+    }
+
+    case "exchange_summary": {
+      const summary = input.summary as string;
+      const startGroup = input.start_group as number;
+      const endGroup = input.end_group as number;
+      const sessionId = (input.session_id as number | undefined) ?? null;
+      const tokens = estimateTokens(summary) + 8;
+      const content = JSON.stringify([
+        { role: "user", content: "[summary]" },
+        { role: "assistant", content: summary },
+      ]);
+      storeExchangeLevel(db, startGroup, endGroup, sessionId, 2, content, tokens);
+      result.operationsExecuted++;
+      return { ok: true };
+    }
+
+    case "session_summary": {
+      const summary = input.summary as string;
+      const startGroup = input.start_group as number;
+      const endGroup = input.end_group as number;
+      const sessionId = (input.session_id as number | undefined) ?? null;
+      const tokens = estimateTokens(summary) + 8;
+      const content = JSON.stringify([
+        { role: "user", content: "[session summary]" },
+        { role: "assistant", content: summary },
+      ]);
+      storeExchangeLevel(db, startGroup, endGroup, sessionId, 3, content, tokens);
       result.operationsExecuted++;
       return { ok: true };
     }

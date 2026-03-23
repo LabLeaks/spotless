@@ -230,4 +230,10 @@ export interface ProxyState {
   selectorRunning: Promise<SelectorResult> | null;
   lastSystemPrompt: string | null;
   selectorGeneration: number;
+  /** Current session counter (incremented on each session boundary). */
+  currentSessionId: number;
+  /** Start message_group of the current exchange (set on human_turn). */
+  currentExchangeStart: number | null;
+  /** Active files and concepts for composer scoring. */
+  workingSet: import("./working-set.ts").WorkingSet;
 }

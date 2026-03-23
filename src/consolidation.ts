@@ -46,10 +46,10 @@ export function buildPressureSignal(pressure: number, unconsolidatedTokens: numb
   const approxTokens = Math.round(unconsolidatedTokens / 1000);
 
   if (level === "moderate") {
-    return `<memory-pressure level="moderate">You have approximately ${approxTokens}k tokens of unconsolidated experience. Your memory consolidation is falling behind the pace of conversation. This is not yet critical, but shorter exchanges or natural pauses help your memory consolidation can catch up.</memory-pressure>`;
+    return `<memory-pressure level="moderate">Your memory consolidation is falling behind — you have approximately ${approxTokens}k tokens of unconsolidated experience. Recent interactions may not yet be encoded into your long-term memory. Consider wrapping up the current thread to let consolidation catch up.</memory-pressure>`;
   }
 
-  return `<memory-pressure level="high">You have approximately ${approxTokens}k tokens of unconsolidated experience — your memory consolidation is critically behind. If the conversation continues at this pace, experiences may be lost before they can be consolidated. Please ask the human to slow down or take a break so your memory consolidation can catch up.</memory-pressure>`;
+  return `<memory-pressure level="high">Your memory consolidation is significantly behind — approximately ${approxTokens}k tokens of unconsolidated experience. Your long-term memory has gaps in recent work. Please pause for a few minutes to allow consolidation to process.</memory-pressure>`;
 }
 
 // --- DB queries ---

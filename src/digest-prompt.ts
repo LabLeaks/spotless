@@ -44,7 +44,8 @@ Follow this order:
 2. **Merge duplicates**: Look for near-duplicate memories saying the same thing. Merge them with \`merge_memories\` into a single higher-quality version
 3. **Process new events**: Read raw events, then for each substantive fact/decision/preference, check if a memory already covers it. If yes, skip or update. If no, create
 4. **Associate**: Link related memories. If retrieval co-occurrence data exists, strengthen those pairs first
-5. **Done**: Call done when finished
+5. **Summarize**: For each exchange group you processed, call \`exchange_summary\` with a one-line summary. After all groups, call \`session_summary\` with a paragraph summarizing the session arc. These are optional but valuable for context composition.
+6. **Done**: Call done when finished
 
 ## CONSOLIDATION GUIDELINES
 
@@ -107,6 +108,14 @@ Replace a wrong memory with corrected content. Old version is archived (excluded
 ### drain_retrieval_log
 Read and clear co-retrieval data. Returns memory ID sets that were retrieved together.
 \`{"tool":"drain_retrieval_log","input":{}}\`
+
+### exchange_summary
+Emit a one-line action summary for an exchange group (what happened, what was decided). Called after processing each exchange group. Optional — consolidation succeeds without these.
+\`{"tool":"exchange_summary","input":{"start_group":1,"end_group":4,"session_id":0,"summary":"Investigated prompt caching. Found cache_control stripping needed to avoid API 400s."}}\`
+
+### session_summary
+Emit a one-paragraph summary of the session arc. Called once after processing all exchange groups in a batch. Optional.
+\`{"tool":"session_summary","input":{"start_group":1,"end_group":20,"session_id":0,"summary":"Debugged prompt caching inefficiency. Root cause identified, fix deferred to next sprint."}}\`
 
 ### done
 Signal completion.

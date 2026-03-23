@@ -155,12 +155,23 @@ export class StreamTap {
     signature?: string;
   } | null = null;
   stopReason: string | null = null;
+  cacheReadTokens: number = 0;
+  cacheCreationTokens: number = 0;
 
   processSSEEvent(data: unknown): void {
     if (!data || typeof data !== "object") return;
     const event = data as Record<string, unknown>;
 
     switch (event.type) {
+      case "message_start": {
+        const msg = event.message as Record<string, unknown> | undefined;
+        const usage = msg?.usage as Record<string, number> | undefined;
+        if (usage) {
+          this.cacheReadTokens = usage.cache_read_input_tokens ?? 0;
+          this.cacheCreationTokens = usage.cache_creation_input_tokens ?? 0;
+        }
+        break;
+      }
       case "content_block_start": {
         const block = event.content_block as Record<string, unknown>;
         this.currentBlock = {
@@ -221,5 +232,7 @@ export class StreamTap {
     this.blocks = [];
     this.currentBlock = null;
     this.stopReason = null;
+    this.cacheReadTokens = 0;
+    this.cacheCreationTokens = 0;
   }
 }
